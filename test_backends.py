@@ -574,5 +574,71 @@ class TestMailboxBackend(unittest.TestCase):
             b.get("/nonexistent.eml")
 
 
+class TestAstBackend(unittest.TestCase):
+    def _make_py(self, content: str) -> str:
+        f = tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w")
+        f.write(content)
+        f.close()
+        self._tmpfiles.append(f.name)
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_functions(self):
+        from backend_ast import AstBackend
+        path = self._make_py("def hello():\n    return 'hi'\n\ndef goodbye():\n    return 'bye'\n")
+        b = AstBackend(path)
+        self.assertTrue(b.info("/").is_dir)
+        entries = b.list("/")
+        self.assertIn("hello.py", entries)
+        self.assertIn("goodbye.py", entries)
+        src = b.get("/hello.py")
+        self.assertIn(b"def hello", src)
+        self.assertIn(b"return 'hi'", src)
+
+    def test_class_with_methods(self):
+        from backend_ast import AstBackend
+        path = self._make_py(
+            "class Foo:\n"
+            "    def bar(self):\n"
+            "        pass\n"
+            "    def baz(self):\n"
+            "        return 1\n"
+        )
+        b = AstBackend(path)
+        entries = b.list("/")
+        self.assertIn("Foo", entries)
+        self.assertTrue(b.info("/Foo").is_dir)
+        methods = b.list("/Foo")
+        self.assertIn("bar.py", methods)
+        self.assertIn("baz.py", methods)
+        src = b.get("/Foo/baz.py")
+        self.assertIn(b"def baz", src)
+
+    def test_empty_file(self):
+        from backend_ast import AstBackend
+        path = self._make_py("# just a comment\nx = 1\n")
+        b = AstBackend(path)
+        self.assertEqual(b.list("/"), [])
+
+    def test_not_found(self):
+        from backend_ast import AstBackend
+        path = self._make_py("def f(): pass\n")
+        b = AstBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.info("/nonexistent")
+
+    def test_syntax_error(self):
+        from backend_ast import AstBackend
+        path = self._make_py("def (broken syntax")
+        with self.assertRaises(BackendError):
+            AstBackend(path)
+
+
 if __name__ == "__main__":
     unittest.main()
