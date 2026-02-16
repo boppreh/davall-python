@@ -1,9 +1,10 @@
 """Read-only WebDAV server built on http.server."""
 
 import io
+import json
 import xml.etree.ElementTree as ET
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlparse, parse_qs
 
 from backend import Backend, NotFoundError, BackendError, _normalize
 
@@ -139,7 +140,12 @@ class WebDAVHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _get_path(self) -> str:
-        return _normalize(unquote(self.path))
+        parsed = urlparse(self.path)
+        return _normalize(unquote(parsed.path))
+
+    def _has_json_param(self) -> bool:
+        parsed = urlparse(self.path)
+        return "json" in parse_qs(parsed.query, keep_blank_values=True)
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -154,8 +160,45 @@ class WebDAVHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._handle_get(include_body=False)
 
+    def _build_json_subtree(self, path: str):
+        """Recursively build a JSON-serializable subtree from a path."""
+        info = self.backend.info(path)
+        if not info.is_dir:
+            data = self.backend.get(path)
+            # Try to decode as text
+            try:
+                return data.decode("utf-8")
+            except UnicodeDecodeError:
+                return None  # binary files become null in JSON
+
+        children = self.backend.list(path)
+        result = {}
+        for name in children:
+            child_path = path.rstrip("/") + "/" + name
+            result[name] = self._build_json_subtree(child_path)
+        return result
+
     def _handle_get(self, include_body: bool):
         path = self._get_path()
+
+        if self._has_json_param():
+            try:
+                tree = self._build_json_subtree(path)
+            except NotFoundError:
+                self._send_error(404, "Not Found")
+                return
+            except BackendError as e:
+                self._send_error(500, str(e))
+                return
+            body = json.dumps(tree, indent=2, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if include_body:
+                self.wfile.write(body)
+            return
+
         try:
             info = self.backend.info(path)
         except NotFoundError:

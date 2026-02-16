@@ -1,5 +1,6 @@
 """Tests for the WebDAV server and MemoryBackend."""
 
+import json
 import threading
 import unittest
 import xml.etree.ElementTree as ET
@@ -265,6 +266,66 @@ class TestWebDAVServer(unittest.TestCase):
         resp.read()
         conn.close()
         self.assertEqual(resp.status, 405)
+
+    # --- ?json subtree ---
+
+    def _get_json(self, path: str) -> dict | str:
+        """GET with ?json and parse the response."""
+        conn = self._conn()
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("application/json", resp.getheader("Content-Type"))
+        return json.loads(data)
+
+    def test_json_file(self):
+        result = self._get_json("/hello.txt?json")
+        self.assertEqual(result, "Hello, world!")
+
+    def test_json_root(self):
+        result = self._get_json("/?json")
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["hello.txt"], "Hello, world!")
+        self.assertEqual(result["empty.txt"], "")
+        self.assertIsInstance(result["docs"], dict)
+        self.assertEqual(result["docs"]["guide.txt"], "A guide to things")
+
+    def test_json_subdir(self):
+        result = self._get_json("/docs?json")
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["guide.txt"], "A guide to things")
+        self.assertIsInstance(result["nested"], dict)
+        self.assertEqual(result["nested"]["deep.txt"], "Deep content")
+
+    def test_json_nested_subdir(self):
+        result = self._get_json("/docs/nested?json")
+        self.assertEqual(result, {"deep.txt": "Deep content"})
+
+    def test_json_not_found(self):
+        conn = self._conn()
+        conn.request("GET", "/nonexistent?json")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 404)
+
+    def test_json_binary_file(self):
+        # \x00\x01\x02\x03 is valid UTF-8 (control chars), so it decodes as a string
+        result = self._get_json("/binary.bin?json")
+        self.assertIsInstance(result, str)
+
+    def test_json_head(self):
+        conn = self._conn()
+        conn.request("HEAD", "/docs?json")
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("application/json", resp.getheader("Content-Type"))
+        self.assertEqual(data, b"")  # HEAD has no body
+        self.assertGreater(int(resp.getheader("Content-Length")), 0)
 
 
 if __name__ == "__main__":
