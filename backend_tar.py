@@ -26,6 +26,9 @@ class TarBackend(Backend):
                 for i in range(1, len(parts)):
                     self._dirs.add(parts[:i])
 
+    def close(self):
+        self._tf.close()
+
     def info(self, path: list[str]) -> ResourceInfo:
         key = tuple(path)
         if key in self._dirs:

@@ -40,6 +40,16 @@ class Backend:
         """Return the content of a file. Raises NotFoundError if not a file."""
         raise NotImplementedError
 
+    def close(self):
+        """Release any held resources. Safe to call multiple times."""
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
 
 class MemoryBackend(Backend):
     """In-memory backend backed by a nested dict.

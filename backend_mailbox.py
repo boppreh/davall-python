@@ -38,6 +38,9 @@ class MailboxBackend(Backend):
             self._files[name] = i
             self._order.append(name)
 
+    def close(self):
+        self._mbox.close()
+
     def _get_message_bytes(self, index: int) -> bytes:
         return self._mbox[index].as_bytes()
 

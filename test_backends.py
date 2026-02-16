@@ -108,20 +108,28 @@ class TestTarBackend(unittest.TestCase):
                 tf.addfile(ti, io.BytesIO(data))
         return f.name
 
+    def _open(self, path: str):
+        from backend_tar import TarBackend
+        b = TarBackend(path)
+        self._backends.append(b)
+        return b
+
     def setUp(self):
         self._tmpfiles = []
+        self._backends = []
 
     def tearDown(self):
+        for b in self._backends:
+            b.close()
         for f in self._tmpfiles:
             os.unlink(f)
 
     def test_basic(self):
-        from backend_tar import TarBackend
         path = self._make_tar({
             "hello.txt": b"Hello!",
             "dir/nested.txt": b"Nested content",
         })
-        b = TarBackend(path)
+        b = self._open(path)
         self.assertTrue(b.info([]).is_dir)
         self.assertEqual(b.list([]), ["dir", "hello.txt"])
         self.assertEqual(b.get(["hello.txt"]), b"Hello!")
@@ -129,28 +137,24 @@ class TestTarBackend(unittest.TestCase):
         self.assertEqual(b.get(["dir", "nested.txt"]), b"Nested content")
 
     def test_gzip(self):
-        from backend_tar import TarBackend
         path = self._make_tar({"file.txt": b"compressed"}, compression="gz")
-        b = TarBackend(path)
+        b = self._open(path)
         self.assertEqual(b.get(["file.txt"]), b"compressed")
 
     def test_bz2(self):
-        from backend_tar import TarBackend
         path = self._make_tar({"file.txt": b"bz2 data"}, compression="bz2")
-        b = TarBackend(path)
+        b = self._open(path)
         self.assertEqual(b.get(["file.txt"]), b"bz2 data")
 
     def test_not_found(self):
-        from backend_tar import TarBackend
         path = self._make_tar({"a.txt": b"data"})
-        b = TarBackend(path)
+        b = self._open(path)
         with self.assertRaises(NotFoundError):
             b.info(["nonexistent"])
 
     def test_empty_tar(self):
-        from backend_tar import TarBackend
         path = self._make_tar({})
-        b = TarBackend(path)
+        b = self._open(path)
         self.assertEqual(b.list([]), [])
 
     def test_bad_tar(self):
@@ -175,21 +179,29 @@ class TestSqliteBackend(unittest.TestCase):
         conn.close()
         return f.name
 
+    def _open(self, path: str):
+        from backend_sqlite import SqliteBackend
+        b = SqliteBackend(path)
+        self._backends.append(b)
+        return b
+
     def setUp(self):
         self._tmpfiles = []
+        self._backends = []
 
     def tearDown(self):
+        for b in self._backends:
+            b.close()
         for f in self._tmpfiles:
             os.unlink(f)
 
     def test_basic(self):
-        from backend_sqlite import SqliteBackend
         path = self._make_db([
             "CREATE TABLE users (name TEXT, age INTEGER)",
             "INSERT INTO users VALUES ('Alice', 30)",
             "INSERT INTO users VALUES ('Bob', 25)",
         ])
-        b = SqliteBackend(path)
+        b = self._open(path)
         self.assertTrue(b.info([]).is_dir)
         self.assertEqual(b.list([]), ["users"])
         self.assertTrue(b.info(["users"]).is_dir)
@@ -202,36 +214,32 @@ class TestSqliteBackend(unittest.TestCase):
         self.assertEqual(b.get(["users", "row_1", "name"]), b"Bob")
 
     def test_multiple_tables(self):
-        from backend_sqlite import SqliteBackend
         path = self._make_db([
             "CREATE TABLE a (x INTEGER)",
             "CREATE TABLE b (y TEXT)",
         ])
-        b = SqliteBackend(path)
+        b = self._open(path)
         self.assertEqual(b.list([]), ["a", "b"])
 
     def test_empty_table(self):
-        from backend_sqlite import SqliteBackend
         path = self._make_db(["CREATE TABLE empty (col TEXT)"])
-        b = SqliteBackend(path)
+        b = self._open(path)
         self.assertEqual(b.list(["empty"]), ["_schema.sql"])
 
     def test_not_found(self):
-        from backend_sqlite import SqliteBackend
         path = self._make_db(["CREATE TABLE t (x INTEGER)"])
-        b = SqliteBackend(path)
+        b = self._open(path)
         with self.assertRaises(NotFoundError):
             b.info(["nonexistent"])
         with self.assertRaises(NotFoundError):
             b.info(["t", "row_999"])
 
     def test_info_sizes(self):
-        from backend_sqlite import SqliteBackend
         path = self._make_db([
             "CREATE TABLE t (val TEXT)",
             "INSERT INTO t VALUES ('hello')",
         ])
-        b = SqliteBackend(path)
+        b = self._open(path)
         info = b.info(["t", "_schema.sql"])
         self.assertFalse(info.is_dir)
         self.assertGreater(info.size, 0)
@@ -240,12 +248,11 @@ class TestSqliteBackend(unittest.TestCase):
         self.assertEqual(info.size, 5)
 
     def test_null_value(self):
-        from backend_sqlite import SqliteBackend
         path = self._make_db([
             "CREATE TABLE t (val TEXT)",
             "INSERT INTO t VALUES (NULL)",
         ])
-        b = SqliteBackend(path)
+        b = self._open(path)
         self.assertEqual(b.get(["t", "row_0", "val"]), b"")
 
 
@@ -514,20 +521,28 @@ class TestMailboxBackend(unittest.TestCase):
         mbox.close()
         return f.name
 
+    def _open(self, path: str):
+        from backend_mailbox import MailboxBackend
+        b = MailboxBackend(path)
+        self._backends.append(b)
+        return b
+
     def setUp(self):
         self._tmpfiles = []
+        self._backends = []
 
     def tearDown(self):
+        for b in self._backends:
+            b.close()
         for f in self._tmpfiles:
             os.unlink(f)
 
     def test_basic(self):
-        from backend_mailbox import MailboxBackend
         path = self._make_mbox([
             ("Hello World", "First message body"),
             ("Test Email", "Second message"),
         ])
-        b = MailboxBackend(path)
+        b = self._open(path)
         self.assertTrue(b.info([]).is_dir)
         entries = b.list([])
         self.assertEqual(len(entries), 2)
@@ -538,15 +553,13 @@ class TestMailboxBackend(unittest.TestCase):
         self.assertIn(b"First message body", data)
 
     def test_empty_mbox(self):
-        from backend_mailbox import MailboxBackend
         path = self._make_mbox([])
-        b = MailboxBackend(path)
+        b = self._open(path)
         self.assertEqual(b.list([]), [])
 
     def test_not_found(self):
-        from backend_mailbox import MailboxBackend
         path = self._make_mbox([("Test", "body")])
-        b = MailboxBackend(path)
+        b = self._open(path)
         with self.assertRaises(NotFoundError):
             b.get(["nonexistent.eml"])
 

@@ -47,6 +47,9 @@ class SqliteBackend(Backend):
             cur = self._conn.execute(f'PRAGMA table_info("{table}")')
             self._columns[table] = [row[1] for row in cur.fetchall()]
 
+    def close(self):
+        self._conn.close()
+
     def _get_schema(self, table: str) -> bytes:
         cur = self._conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
