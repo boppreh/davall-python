@@ -52,6 +52,7 @@ The WebDAV server supports OPTIONS, GET, HEAD, PROPFIND. All write methods retur
 
 - `NotFoundError` for missing resources, `BackendError` for internal errors
 - Backend constructors raise `BackendError` for invalid/corrupt input files
+- Backends that hold resources (tar, sqlite, mailbox) implement `close()`; all backends support context manager protocol
 - `?json` query parameter on GET returns recursive JSON subtree export
 - Server tests use a live HTTP server on a random port (port 0)
 - This is read-only — no write operations should ever be added to backends
