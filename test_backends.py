@@ -442,5 +442,78 @@ class TestIniBackend(unittest.TestCase):
             b.get("/s/nonexistent")
 
 
+class TestXmlBackend(unittest.TestCase):
+    def _make_xml(self, content: str) -> str:
+        f = tempfile.NamedTemporaryFile(suffix=".xml", delete=False, mode="w")
+        f.write(content)
+        f.close()
+        self._tmpfiles.append(f.name)
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_basic(self):
+        from backend_xml import XmlBackend
+        path = self._make_xml('<root><child>Hello</child></root>')
+        b = XmlBackend(path)
+        self.assertTrue(b.info("/").is_dir)
+        self.assertIn("child", b.list("/"))
+        self.assertTrue(b.info("/child").is_dir)
+        self.assertIn("_text", b.list("/child"))
+        self.assertEqual(b.get("/child/_text"), b"Hello")
+
+    def test_attributes(self):
+        from backend_xml import XmlBackend
+        path = self._make_xml('<root><item id="1" name="test"/></root>')
+        b = XmlBackend(path)
+        entries = b.list("/item")
+        self.assertIn("_attribs.json", entries)
+        attribs = json.loads(b.get("/item/_attribs.json"))
+        self.assertEqual(attribs["id"], "1")
+        self.assertEqual(attribs["name"], "test")
+
+    def test_duplicate_tags(self):
+        from backend_xml import XmlBackend
+        path = self._make_xml('<root><item>A</item><item>B</item><item>C</item></root>')
+        b = XmlBackend(path)
+        entries = b.list("/")
+        self.assertIn("item_0", entries)
+        self.assertIn("item_1", entries)
+        self.assertIn("item_2", entries)
+        self.assertEqual(b.get("/item_0/_text"), b"A")
+        self.assertEqual(b.get("/item_2/_text"), b"C")
+
+    def test_nested(self):
+        from backend_xml import XmlBackend
+        path = self._make_xml('<a><b><c>deep</c></b></a>')
+        b = XmlBackend(path)
+        self.assertEqual(b.get("/b/c/_text"), b"deep")
+
+    def test_no_text(self):
+        from backend_xml import XmlBackend
+        path = self._make_xml('<root><empty/></root>')
+        b = XmlBackend(path)
+        entries = b.list("/empty")
+        self.assertNotIn("_text", entries)
+
+    def test_not_found(self):
+        from backend_xml import XmlBackend
+        path = self._make_xml('<root/>')
+        b = XmlBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.info("/nonexistent")
+
+    def test_bad_xml(self):
+        from backend_xml import XmlBackend
+        path = self._make_xml('not xml at all <<<')
+        with self.assertRaises(BackendError):
+            XmlBackend(path)
+
+
 if __name__ == "__main__":
     unittest.main()
