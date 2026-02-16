@@ -1,0 +1,271 @@
+"""Tests for the WebDAV server and MemoryBackend."""
+
+import threading
+import unittest
+import xml.etree.ElementTree as ET
+from http.client import HTTPConnection
+
+from backend import MemoryBackend, NotFoundError, ResourceInfo
+from server import make_server, DAV_NS
+
+
+SAMPLE_TREE = {
+    "hello.txt": "Hello, world!",
+    "empty.txt": "",
+    "binary.bin": b"\x00\x01\x02\x03",
+    "docs": {
+        "guide.txt": "A guide to things",
+        "nested": {
+            "deep.txt": "Deep content",
+        },
+    },
+}
+
+
+class TestMemoryBackend(unittest.TestCase):
+    def setUp(self):
+        self.backend = MemoryBackend(SAMPLE_TREE)
+
+    def test_root_is_dir(self):
+        info = self.backend.info("/")
+        self.assertTrue(info.is_dir)
+
+    def test_list_root(self):
+        children = self.backend.list("/")
+        self.assertEqual(children, ["binary.bin", "docs", "empty.txt", "hello.txt"])
+
+    def test_get_file(self):
+        self.assertEqual(self.backend.get("/hello.txt"), b"Hello, world!")
+
+    def test_get_binary(self):
+        self.assertEqual(self.backend.get("/binary.bin"), b"\x00\x01\x02\x03")
+
+    def test_get_empty(self):
+        self.assertEqual(self.backend.get("/empty.txt"), b"")
+
+    def test_info_file(self):
+        info = self.backend.info("/hello.txt")
+        self.assertFalse(info.is_dir)
+        self.assertEqual(info.size, 13)
+
+    def test_list_subdir(self):
+        children = self.backend.list("/docs")
+        self.assertEqual(children, ["guide.txt", "nested"])
+
+    def test_nested_file(self):
+        self.assertEqual(self.backend.get("/docs/guide.txt"), b"A guide to things")
+
+    def test_deep_nested(self):
+        self.assertEqual(self.backend.get("/docs/nested/deep.txt"), b"Deep content")
+
+    def test_not_found(self):
+        with self.assertRaises(NotFoundError):
+            self.backend.info("/nonexistent")
+
+    def test_get_dir_raises(self):
+        with self.assertRaises(NotFoundError):
+            self.backend.get("/docs")
+
+    def test_list_file_raises(self):
+        with self.assertRaises(NotFoundError):
+            self.backend.list("/hello.txt")
+
+    def test_normalize_trailing_slash(self):
+        info = self.backend.info("/docs/")
+        self.assertTrue(info.is_dir)
+
+    def test_normalize_double_slash(self):
+        data = self.backend.get("//hello.txt")
+        self.assertEqual(data, b"Hello, world!")
+
+
+class TestWebDAVServer(unittest.TestCase):
+    """Integration tests against a live WebDAV server."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.backend = MemoryBackend(SAMPLE_TREE)
+        cls.server = make_server(cls.backend, "127.0.0.1", 0)  # random port
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever)
+        cls.thread.daemon = True
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.thread.join(timeout=2)
+
+    def _conn(self) -> HTTPConnection:
+        return HTTPConnection("127.0.0.1", self.port)
+
+    def _propfind(self, path: str, depth: str = "1", body: bytes = b"") -> tuple:
+        """Send a PROPFIND request. Returns (status, parsed_xml_root)."""
+        conn = self._conn()
+        headers = {"Depth": depth}
+        if body:
+            headers["Content-Type"] = "application/xml"
+            headers["Content-Length"] = str(len(body))
+        conn.request("PROPFIND", path, body=body, headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        if resp.status == 207:
+            return resp.status, ET.fromstring(data)
+        return resp.status, data
+
+    # --- OPTIONS ---
+
+    def test_options(self):
+        conn = self._conn()
+        conn.request("OPTIONS", "/")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("PROPFIND", resp.getheader("Allow"))
+        self.assertEqual(resp.getheader("DAV"), "1")
+
+    # --- GET ---
+
+    def test_get_file(self):
+        conn = self._conn()
+        conn.request("GET", "/hello.txt")
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data, b"Hello, world!")
+
+    def test_get_dir_listing(self):
+        conn = self._conn()
+        conn.request("GET", "/docs")
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertIn(b"guide.txt", data)
+
+    def test_get_not_found(self):
+        conn = self._conn()
+        conn.request("GET", "/nonexistent")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 404)
+
+    # --- HEAD ---
+
+    def test_head_file(self):
+        conn = self._conn()
+        conn.request("HEAD", "/hello.txt")
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.getheader("Content-Length"), "13")
+        self.assertEqual(data, b"")  # HEAD should have no body
+
+    # --- PROPFIND ---
+
+    def test_propfind_root_depth0(self):
+        status, xml = self._propfind("/", depth="0")
+        self.assertEqual(status, 207)
+        responses = xml.findall(f"{{{DAV_NS}}}response")
+        self.assertEqual(len(responses), 1)
+        # Root should be a collection
+        rt = responses[0].find(f".//{{{DAV_NS}}}resourcetype")
+        self.assertIsNotNone(rt.find(f"{{{DAV_NS}}}collection"))
+
+    def test_propfind_root_depth1(self):
+        status, xml = self._propfind("/", depth="1")
+        self.assertEqual(status, 207)
+        responses = xml.findall(f"{{{DAV_NS}}}response")
+        # root + 4 children
+        self.assertEqual(len(responses), 5)
+
+    def test_propfind_file(self):
+        status, xml = self._propfind("/hello.txt", depth="0")
+        self.assertEqual(status, 207)
+        responses = xml.findall(f"{{{DAV_NS}}}response")
+        self.assertEqual(len(responses), 1)
+        # Should have content length
+        cl = responses[0].find(f".//{{{DAV_NS}}}getcontentlength")
+        self.assertIsNotNone(cl)
+        self.assertEqual(cl.text, "13")
+        # Should NOT be a collection
+        rt = responses[0].find(f".//{{{DAV_NS}}}resourcetype")
+        self.assertIsNone(rt.find(f"{{{DAV_NS}}}collection"))
+
+    def test_propfind_subdir(self):
+        status, xml = self._propfind("/docs", depth="1")
+        self.assertEqual(status, 207)
+        responses = xml.findall(f"{{{DAV_NS}}}response")
+        # docs/ + guide.txt + nested/
+        self.assertEqual(len(responses), 3)
+
+    def test_propfind_depth_infinity(self):
+        status, xml = self._propfind("/", depth="infinity")
+        self.assertEqual(status, 207)
+        responses = xml.findall(f"{{{DAV_NS}}}response")
+        # root + binary.bin + docs/ + docs/guide.txt + docs/nested/ + docs/nested/deep.txt + empty.txt + hello.txt
+        self.assertEqual(len(responses), 8)
+
+    def test_propfind_not_found(self):
+        status, _ = self._propfind("/nonexistent", depth="0")
+        self.assertEqual(status, 404)
+
+    def test_propfind_allprop(self):
+        body = b'<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>'
+        status, xml = self._propfind("/hello.txt", depth="0", body=body)
+        self.assertEqual(status, 207)
+
+    def test_propfind_specific_props(self):
+        body = b'<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:displayname/><D:getcontentlength/></D:prop></D:propfind>'
+        status, xml = self._propfind("/hello.txt", depth="0", body=body)
+        self.assertEqual(status, 207)
+        responses = xml.findall(f"{{{DAV_NS}}}response")
+        prop = responses[0].find(f".//{{{DAV_NS}}}prop")
+        # Should have displayname and contentlength
+        self.assertIsNotNone(prop.find(f"{{{DAV_NS}}}displayname"))
+        self.assertIsNotNone(prop.find(f"{{{DAV_NS}}}getcontentlength"))
+        # Should NOT have resourcetype (we didn't request it)
+        self.assertIsNone(prop.find(f"{{{DAV_NS}}}resourcetype"))
+
+    # --- Write methods should be rejected ---
+
+    def test_put_rejected(self):
+        conn = self._conn()
+        conn.request("PUT", "/new.txt", body=b"data")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 405)
+
+    def test_delete_rejected(self):
+        conn = self._conn()
+        conn.request("DELETE", "/hello.txt")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 405)
+
+    def test_mkcol_rejected(self):
+        conn = self._conn()
+        conn.request("MKCOL", "/newdir")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 405)
+
+    def test_lock_rejected(self):
+        conn = self._conn()
+        conn.request("LOCK", "/hello.txt")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 405)
+
+
+if __name__ == "__main__":
+    unittest.main()
