@@ -265,5 +265,84 @@ class TestSqliteBackend(unittest.TestCase):
         self.assertGreater(info.size, 0)
 
 
+class TestJsonBackend(unittest.TestCase):
+    def _make_json(self, data) -> str:
+        f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        json.dump(data, f)
+        f.close()
+        self._tmpfiles.append(f.name)
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_dict(self):
+        from backend_json import JsonBackend
+        path = self._make_json({"name": "Alice", "age": 30})
+        b = JsonBackend(path)
+        self.assertTrue(b.info("/").is_dir)
+        self.assertEqual(b.list("/"), ["age", "name"])
+        self.assertEqual(b.get("/name"), b"Alice")
+        self.assertEqual(b.get("/age"), b"30")
+
+    def test_nested_dict(self):
+        from backend_json import JsonBackend
+        path = self._make_json({"a": {"b": "value"}})
+        b = JsonBackend(path)
+        self.assertTrue(b.info("/a").is_dir)
+        self.assertEqual(b.list("/a"), ["b"])
+        self.assertEqual(b.get("/a/b"), b"value")
+
+    def test_list(self):
+        from backend_json import JsonBackend
+        path = self._make_json({"items": [10, 20, 30]})
+        b = JsonBackend(path)
+        self.assertTrue(b.info("/items").is_dir)
+        self.assertEqual(b.list("/items"), ["0", "1", "2"])
+        self.assertEqual(b.get("/items/0"), b"10")
+        self.assertEqual(b.get("/items/2"), b"30")
+
+    def test_root_list(self):
+        from backend_json import JsonBackend
+        path = self._make_json(["a", "b", "c"])
+        b = JsonBackend(path)
+        self.assertEqual(b.list("/"), ["0", "1", "2"])
+        self.assertEqual(b.get("/0"), b"a")
+
+    def test_null_bool(self):
+        from backend_json import JsonBackend
+        path = self._make_json({"n": None, "t": True, "f": False})
+        b = JsonBackend(path)
+        self.assertEqual(b.get("/n"), b"null")
+        self.assertEqual(b.get("/t"), b"true")
+        self.assertEqual(b.get("/f"), b"false")
+
+    def test_not_found(self):
+        from backend_json import JsonBackend
+        path = self._make_json({"a": 1})
+        b = JsonBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.info("/nonexistent")
+
+    def test_bad_json(self):
+        from backend_json import JsonBackend
+        f = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        f.write("not json{{{")
+        f.close()
+        self._tmpfiles.append(f.name)
+        with self.assertRaises(BackendError):
+            JsonBackend(f.name)
+
+    def test_scalar_root_rejected(self):
+        from backend_json import JsonBackend
+        path = self._make_json("just a string")
+        with self.assertRaises(BackendError):
+            JsonBackend(path)
+
+
 if __name__ == "__main__":
     unittest.main()
