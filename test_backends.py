@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import sqlite3
 import tarfile
 import tempfile
 import unittest
@@ -173,6 +174,95 @@ class TestTarBackend(unittest.TestCase):
         self._tmpfiles.append(f.name)
         with self.assertRaises(BackendError):
             TarBackend(f.name)
+
+
+class TestSqliteBackend(unittest.TestCase):
+    def _make_db(self, setup_sql: list[str]) -> str:
+        f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        f.close()
+        self._tmpfiles.append(f.name)
+        conn = sqlite3.connect(f.name)
+        for sql in setup_sql:
+            conn.execute(sql)
+        conn.commit()
+        conn.close()
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_basic(self):
+        from backend_sqlite import SqliteBackend
+        path = self._make_db([
+            "CREATE TABLE users (name TEXT, age INTEGER)",
+            "INSERT INTO users VALUES ('Alice', 30)",
+            "INSERT INTO users VALUES ('Bob', 25)",
+        ])
+        b = SqliteBackend(path)
+
+        # Root lists tables
+        self.assertTrue(b.info("/").is_dir)
+        self.assertEqual(b.list("/"), ["users"])
+
+        # Table directory
+        self.assertTrue(b.info("/users").is_dir)
+        entries = b.list("/users")
+        self.assertEqual(entries, ["_schema.sql", "row_0.json", "row_1.json"])
+
+        # Schema file
+        schema = b.get("/users/_schema.sql")
+        self.assertIn(b"CREATE TABLE", schema)
+        self.assertIn(b"users", schema)
+
+        # Row files
+        row0 = json.loads(b.get("/users/row_0.json"))
+        self.assertEqual(row0["name"], "Alice")
+        self.assertEqual(row0["age"], 30)
+
+        row1 = json.loads(b.get("/users/row_1.json"))
+        self.assertEqual(row1["name"], "Bob")
+
+    def test_multiple_tables(self):
+        from backend_sqlite import SqliteBackend
+        path = self._make_db([
+            "CREATE TABLE a (x INTEGER)",
+            "CREATE TABLE b (y TEXT)",
+        ])
+        b = SqliteBackend(path)
+        self.assertEqual(b.list("/"), ["a", "b"])
+
+    def test_empty_table(self):
+        from backend_sqlite import SqliteBackend
+        path = self._make_db(["CREATE TABLE empty (col TEXT)"])
+        b = SqliteBackend(path)
+        self.assertEqual(b.list("/empty"), ["_schema.sql"])
+
+    def test_not_found(self):
+        from backend_sqlite import SqliteBackend
+        path = self._make_db(["CREATE TABLE t (x INTEGER)"])
+        b = SqliteBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.info("/nonexistent")
+        with self.assertRaises(NotFoundError):
+            b.get("/t/row_999.json")
+
+    def test_info_sizes(self):
+        from backend_sqlite import SqliteBackend
+        path = self._make_db([
+            "CREATE TABLE t (val TEXT)",
+            "INSERT INTO t VALUES ('hello')",
+        ])
+        b = SqliteBackend(path)
+        info = b.info("/t/_schema.sql")
+        self.assertFalse(info.is_dir)
+        self.assertGreater(info.size, 0)
+        info = b.info("/t/row_0.json")
+        self.assertFalse(info.is_dir)
+        self.assertGreater(info.size, 0)
 
 
 if __name__ == "__main__":
