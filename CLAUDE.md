@@ -15,11 +15,11 @@ python -m unittest test_server test_backends -v
 # Run tests for a specific backend
 python -m unittest test_backends.TestZipBackend -v
 
-# Run the server
-python main.py <file> [-p PORT] [--host HOST] [-t TYPE]
-
-# Run the OS info backend (no file needed)
-python main.py --type osinfo
+# Run the server (subcommand per backend type)
+python davall.py auto myfile.zip [-p PORT] [--host HOST]
+python davall.py zip myfile.zip
+python davall.py sqlite mydb.db
+python davall.py osinfo
 ```
 
 ## Architecture
@@ -41,7 +41,7 @@ Backend (backend.py)          — abstract interface: info(), list(), get()
   └── OsInfoBackend           — backend_osinfo.py (no file, uses os/platform)
 
 WebDAV Server (server.py)     — http.server-based, translates HTTP to backend calls
-CLI (main.py)                 — auto-detects backend from file extension
+CLI (davall.py)               — subcommands per backend, or `auto` to detect
 ```
 
 All backends implement three methods on top of `Backend`: `info(path) -> ResourceInfo`, `list(path) -> list[str]`, `get(path) -> bytes`. Paths are `list[str]` (e.g. `["docs", "file.txt"]`), with `[]` as root. The server handles all URL parsing/normalization.
@@ -53,6 +53,6 @@ The WebDAV server supports OPTIONS, GET, HEAD, PROPFIND. All write methods retur
 - `NotFoundError` for missing resources, `BackendError` for internal errors
 - Backend constructors raise `BackendError` for invalid/corrupt input files
 - Backends that hold resources (tar, sqlite, mailbox) implement `close()`; all backends support context manager protocol
-- `?json` query parameter on GET returns recursive JSON subtree export
+- `?json` query parameter on GET returns recursive JSON subtree export; `?zip` returns a ZIP archive
 - Server tests use a live HTTP server on a random port (port 0)
 - This is read-only — no write operations should ever be added to backends
