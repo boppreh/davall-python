@@ -8,7 +8,7 @@ Structure:
 """
 
 import configparser
-from backend import Backend, ResourceInfo, NotFoundError, BackendError, _normalize
+from backend import Backend, ResourceInfo, NotFoundError, BackendError
 
 
 class IniBackend(Backend):
@@ -22,20 +22,17 @@ class IniBackend(Backend):
         except (FileNotFoundError, OSError, configparser.Error) as e:
             raise BackendError(f"Cannot read INI file: {e}") from e
 
-    def info(self, path: str) -> ResourceInfo:
-        path = _normalize(path)
-        if path == "/":
+    def info(self, path: list[str]) -> ResourceInfo:
+        if len(path) == 0:
             return ResourceInfo(is_dir=True)
 
-        parts = path.strip("/").split("/")
-        if len(parts) == 1:
-            section = parts[0]
-            if self._config.has_section(section):
+        if len(path) == 1:
+            if self._config.has_section(path[0]):
                 return ResourceInfo(is_dir=True)
             raise NotFoundError(f"Not found: {path}")
 
-        if len(parts) == 2:
-            section, key = parts
+        if len(path) == 2:
+            section, key = path
             if self._config.has_section(section) and self._config.has_option(section, key):
                 value = self._config.get(section, key).encode("utf-8")
                 return ResourceInfo(is_dir=False, size=len(value), content_type="text/plain")
@@ -43,26 +40,20 @@ class IniBackend(Backend):
 
         raise NotFoundError(f"Not found: {path}")
 
-    def list(self, path: str) -> list[str]:
-        path = _normalize(path)
-        if path == "/":
+    def list(self, path: list[str]) -> list[str]:
+        if len(path) == 0:
             return sorted(self._config.sections())
 
-        parts = path.strip("/").split("/")
-        if len(parts) == 1:
-            section = parts[0]
-            if not self._config.has_section(section):
+        if len(path) == 1:
+            if not self._config.has_section(path[0]):
                 raise NotFoundError(f"Not a directory: {path}")
-            return sorted(self._config.options(section))
+            return sorted(self._config.options(path[0]))
 
         raise NotFoundError(f"Not a directory: {path}")
 
-    def get(self, path: str) -> bytes:
-        path = _normalize(path)
-        parts = path.strip("/").split("/")
-
-        if len(parts) == 2:
-            section, key = parts
+    def get(self, path: list[str]) -> bytes:
+        if len(path) == 2:
+            section, key = path
             if self._config.has_section(section) and self._config.has_option(section, key):
                 return self._config.get(section, key).encode("utf-8")
 

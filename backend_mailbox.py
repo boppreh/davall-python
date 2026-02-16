@@ -8,7 +8,7 @@ Structure:
 
 import mailbox
 import re
-from backend import Backend, ResourceInfo, NotFoundError, BackendError, _normalize
+from backend import Backend, ResourceInfo, NotFoundError, BackendError
 
 
 def _safe_filename(s: str, max_len: int = 60) -> str:
@@ -27,7 +27,6 @@ class MailboxBackend(Backend):
         except (FileNotFoundError, OSError) as e:
             raise BackendError(f"Cannot open mailbox: {e}") from e
 
-        # Build index: filename -> (index, message bytes)
         self._files: dict[str, int] = {}
         self._order: list[str] = []
         width = max(4, len(str(len(self._mbox))))
@@ -40,30 +39,22 @@ class MailboxBackend(Backend):
             self._order.append(name)
 
     def _get_message_bytes(self, index: int) -> bytes:
-        msg = self._mbox[index]
-        return msg.as_bytes()
+        return self._mbox[index].as_bytes()
 
-    def info(self, path: str) -> ResourceInfo:
-        path = _normalize(path)
-        if path == "/":
+    def info(self, path: list[str]) -> ResourceInfo:
+        if len(path) == 0:
             return ResourceInfo(is_dir=True)
-        name = path.strip("/")
-        if "/" in name:
-            raise NotFoundError(f"Not found: {path}")
-        if name not in self._files:
-            raise NotFoundError(f"Not found: {path}")
-        data = self._get_message_bytes(self._files[name])
-        return ResourceInfo(is_dir=False, size=len(data), content_type="message/rfc822")
+        if len(path) == 1 and path[0] in self._files:
+            data = self._get_message_bytes(self._files[path[0]])
+            return ResourceInfo(is_dir=False, size=len(data), content_type="message/rfc822")
+        raise NotFoundError(f"Not found: {path}")
 
-    def list(self, path: str) -> list[str]:
-        path = _normalize(path)
-        if path != "/":
-            raise NotFoundError(f"Not a directory: {path}")
-        return list(self._order)
+    def list(self, path: list[str]) -> list[str]:
+        if len(path) == 0:
+            return list(self._order)
+        raise NotFoundError(f"Not a directory: {path}")
 
-    def get(self, path: str) -> bytes:
-        path = _normalize(path)
-        name = path.strip("/")
-        if name not in self._files:
-            raise NotFoundError(f"Not found: {path}")
-        return self._get_message_bytes(self._files[name])
+    def get(self, path: list[str]) -> bytes:
+        if len(path) == 1 and path[0] in self._files:
+            return self._get_message_bytes(self._files[path[0]])
+        raise NotFoundError(f"Not found: {path}")

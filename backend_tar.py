@@ -2,7 +2,7 @@
 
 import tarfile
 import mimetypes
-from backend import Backend, ResourceInfo, NotFoundError, BackendError, _normalize
+from backend import Backend, ResourceInfo, NotFoundError, BackendError
 
 
 class TarBackend(Backend):
@@ -14,58 +14,51 @@ class TarBackend(Backend):
         except (tarfile.TarError, FileNotFoundError, OSError) as e:
             raise BackendError(f"Cannot open TAR file: {e}") from e
 
-        self._files: dict[str, tarfile.TarInfo] = {}
-        self._dirs: set[str] = {"/"}
+        self._files: dict[tuple, tarfile.TarInfo] = {}
+        self._dirs: set[tuple] = {()}
 
         for member in self._tf.getmembers():
-            name = "/" + member.name
-            norm = _normalize(name)
+            parts = tuple(p for p in member.name.split("/") if p)
             if member.isdir():
-                self._dirs.add(norm)
+                self._dirs.add(parts)
             else:
-                self._files[norm] = member
-                # Ensure parent directories exist
-                parts = norm.strip("/").split("/")
+                self._files[parts] = member
                 for i in range(1, len(parts)):
-                    self._dirs.add("/" + "/".join(parts[:i]))
+                    self._dirs.add(parts[:i])
 
-    def info(self, path: str) -> ResourceInfo:
-        path = _normalize(path)
-        if path in self._dirs:
+    def info(self, path: list[str]) -> ResourceInfo:
+        key = tuple(path)
+        if key in self._dirs:
             return ResourceInfo(is_dir=True)
-        if path in self._files:
-            member = self._files[path]
+        if key in self._files:
+            member = self._files[key]
             ctype = mimetypes.guess_type(member.name)[0] or "application/octet-stream"
             return ResourceInfo(is_dir=False, size=member.size, content_type=ctype)
         raise NotFoundError(f"Not found: {path}")
 
-    def list(self, path: str) -> list[str]:
-        path = _normalize(path)
-        if path not in self._dirs:
+    def list(self, path: list[str]) -> list[str]:
+        key = tuple(path)
+        if key not in self._dirs:
             raise NotFoundError(f"Not a directory: {path}")
 
-        prefix = path if path == "/" else path + "/"
+        depth = len(key)
         children = set()
         for fpath in self._files:
-            if fpath.startswith(prefix):
-                rest = fpath[len(prefix):]
-                if "/" not in rest:
-                    children.add(rest)
+            if fpath[:depth] == key and len(fpath) == depth + 1:
+                children.add(fpath[depth])
         for dpath in self._dirs:
-            if dpath.startswith(prefix) and dpath != path:
-                rest = dpath[len(prefix):]
-                if "/" not in rest and rest:
-                    children.add(rest)
+            if dpath[:depth] == key and len(dpath) == depth + 1:
+                children.add(dpath[depth])
         return sorted(children)
 
-    def get(self, path: str) -> bytes:
-        path = _normalize(path)
-        if path in self._dirs:
+    def get(self, path: list[str]) -> bytes:
+        key = tuple(path)
+        if key in self._dirs:
             raise NotFoundError(f"Not a file: {path}")
-        if path not in self._files:
+        if key not in self._files:
             raise NotFoundError(f"Not found: {path}")
         try:
-            f = self._tf.extractfile(self._files[path])
+            f = self._tf.extractfile(self._files[key])
             if f is None:
                 raise BackendError(f"Cannot read {path} (may be a link or special file)")
             return f.read()

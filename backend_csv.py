@@ -10,7 +10,16 @@ Structure:
 """
 
 import csv
-from backend import Backend, ResourceInfo, NotFoundError, BackendError, _normalize
+from backend import Backend, ResourceInfo, NotFoundError, BackendError
+
+
+def _parse_row_name(name: str) -> int | None:
+    if not name.startswith("row_"):
+        return None
+    try:
+        return int(name[4:])
+    except ValueError:
+        return None
 
 
 class CsvBackend(Backend):
@@ -31,74 +40,53 @@ class CsvBackend(Backend):
     def _row_dirname(self, index: int) -> str:
         return f"row_{index:0{self._width}d}"
 
-    def _parse_row_name(self, name: str) -> int | None:
-        if not name.startswith("row_"):
-            return None
-        try:
-            return int(name[4:])
-        except ValueError:
-            return None
-
-    def info(self, path: str) -> ResourceInfo:
-        path = _normalize(path)
-        if path == "/":
+    def info(self, path: list[str]) -> ResourceInfo:
+        if len(path) == 0:
             return ResourceInfo(is_dir=True)
 
-        parts = path.strip("/").split("/")
-
-        if len(parts) == 1:
-            name = parts[0]
-            if name == "_headers.txt":
+        if len(path) == 1:
+            if path[0] == "_headers.txt":
                 return ResourceInfo(is_dir=False, size=len(self._headers_bytes), content_type="text/plain")
-            row_idx = self._parse_row_name(name)
+            row_idx = _parse_row_name(path[0])
             if row_idx is not None and 0 <= row_idx < len(self._rows):
                 return ResourceInfo(is_dir=True)
             raise NotFoundError(f"Not found: {path}")
 
-        if len(parts) == 2:
-            row_name, column = parts
-            row_idx = self._parse_row_name(row_name)
+        if len(path) == 2:
+            row_idx = _parse_row_name(path[0])
             if row_idx is None or row_idx < 0 or row_idx >= len(self._rows):
                 raise NotFoundError(f"Not found: {path}")
-            if column not in self._headers:
+            if path[1] not in self._headers:
                 raise NotFoundError(f"Not found: {path}")
-            value = (self._rows[row_idx].get(column) or "").encode("utf-8")
+            value = (self._rows[row_idx].get(path[1]) or "").encode("utf-8")
             return ResourceInfo(is_dir=False, size=len(value), content_type="text/plain")
 
         raise NotFoundError(f"Not found: {path}")
 
-    def list(self, path: str) -> list[str]:
-        path = _normalize(path)
-        if path == "/":
+    def list(self, path: list[str]) -> list[str]:
+        if len(path) == 0:
             entries = ["_headers.txt"]
             entries.extend(self._row_dirname(i) for i in range(len(self._rows)))
             return entries
 
-        parts = path.strip("/").split("/")
-        if len(parts) == 1:
-            row_idx = self._parse_row_name(parts[0])
+        if len(path) == 1:
+            row_idx = _parse_row_name(path[0])
             if row_idx is not None and 0 <= row_idx < len(self._rows):
                 return list(self._headers)
             raise NotFoundError(f"Not a directory: {path}")
 
         raise NotFoundError(f"Not a directory: {path}")
 
-    def get(self, path: str) -> bytes:
-        path = _normalize(path)
-        parts = path.strip("/").split("/")
+    def get(self, path: list[str]) -> bytes:
+        if len(path) == 1 and path[0] == "_headers.txt":
+            return self._headers_bytes
 
-        if len(parts) == 1:
-            if parts[0] == "_headers.txt":
-                return self._headers_bytes
-            raise NotFoundError(f"Not found: {path}")
-
-        if len(parts) == 2:
-            row_name, column = parts
-            row_idx = self._parse_row_name(row_name)
+        if len(path) == 2:
+            row_idx = _parse_row_name(path[0])
             if row_idx is None or row_idx < 0 or row_idx >= len(self._rows):
                 raise NotFoundError(f"Not found: {path}")
-            if column not in self._headers:
+            if path[1] not in self._headers:
                 raise NotFoundError(f"Not found: {path}")
-            return (self._rows[row_idx].get(column) or "").encode("utf-8")
+            return (self._rows[row_idx].get(path[1]) or "").encode("utf-8")
 
         raise NotFoundError(f"Not found: {path}")

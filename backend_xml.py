@@ -11,11 +11,11 @@ Structure:
 """
 
 import xml.etree.ElementTree as ET
-from backend import Backend, ResourceInfo, NotFoundError, BackendError, _normalize
+from backend import Backend, ResourceInfo, NotFoundError, BackendError
 
 
 def _strip_ns(tag: str) -> str:
-    """Remove namespace from a tag like {http://...}name → name."""
+    """Remove namespace from a tag like {http://...}name -> name."""
     if "}" in tag:
         return tag.split("}", 1)[1]
     return tag
@@ -34,10 +34,8 @@ class _XmlNode:
         name_counts: dict[str, int] = {}
         for child_el in element:
             base = _strip_ns(child_el.tag)
-            count = name_counts.get(base, 0)
-            name_counts[base] = count + 1
+            name_counts[base] = name_counts.get(base, 0) + 1
 
-        # Second pass: assign names
         name_used: dict[str, int] = {}
         needs_suffix = {name for name, count in name_counts.items() if count > 1}
         for child_el in element:
@@ -51,10 +49,6 @@ class _XmlNode:
             self.children[name] = _XmlNode(child_el)
 
 
-_SPECIAL_FILES = ("_text",)
-_SPECIAL_DIRS = ("_attribs",)
-
-
 class XmlBackend(Backend):
     """Expose an XML file as a read-only filesystem."""
 
@@ -65,67 +59,55 @@ class XmlBackend(Backend):
             raise BackendError(f"Cannot read XML file: {e}") from e
         self._root = _XmlNode(tree.getroot())
 
-    def _resolve(self, path: str) -> _XmlNode:
-        path = _normalize(path)
-        if path == "/":
-            return self._root
-        parts = path.strip("/").split("/")
+    def _resolve_node(self, path: list[str]) -> _XmlNode:
+        """Resolve a path to an _XmlNode, skipping _text and _attribs segments."""
         node = self._root
-        for part in parts:
-            if part in _SPECIAL_FILES or part in _SPECIAL_DIRS:
+        for part in path:
+            if part in ("_text", "_attribs"):
                 raise NotFoundError("Special entries are not traversable as nodes")
             if part not in node.children:
                 raise NotFoundError(f"Not found: {path}")
             node = node.children[part]
         return node
 
-    def info(self, path: str) -> ResourceInfo:
-        path = _normalize(path)
-        parts = path.strip("/").split("/")
+    def info(self, path: list[str]) -> ResourceInfo:
+        if len(path) == 0:
+            return ResourceInfo(is_dir=True)
 
-        # Check for _text file
-        if parts[-1] == "_text":
-            parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
-            parent = self._resolve(parent_path)
+        last = path[-1]
+        parent_path = path[:-1]
+
+        if last == "_text":
+            parent = self._resolve_node(parent_path)
             if parent.text is None:
                 raise NotFoundError(f"Not found: {path}")
-            data = parent.text.encode("utf-8")
-            return ResourceInfo(is_dir=False, size=len(data), content_type="text/plain")
+            return ResourceInfo(is_dir=False, size=len(parent.text.encode("utf-8")), content_type="text/plain")
 
-        # Check for _attribs directory
-        if parts[-1] == "_attribs":
-            parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
-            parent = self._resolve(parent_path)
+        if last == "_attribs":
+            parent = self._resolve_node(parent_path)
             if not parent.attribs:
                 raise NotFoundError(f"Not found: {path}")
             return ResourceInfo(is_dir=True)
 
-        # Check for _attribs/attr_name file
-        if len(parts) >= 2 and parts[-2] == "_attribs":
-            grandparent_path = "/" + "/".join(parts[:-2]) if len(parts) > 2 else "/"
-            grandparent = self._resolve(grandparent_path)
-            attr_name = parts[-1]
-            if not grandparent.attribs or attr_name not in grandparent.attribs:
+        if len(path) >= 2 and path[-2] == "_attribs":
+            node_path = path[:-2]
+            node = self._resolve_node(node_path)
+            attr_name = last
+            if not node.attribs or attr_name not in node.attribs:
                 raise NotFoundError(f"Not found: {path}")
-            data = grandparent.attribs[attr_name].encode("utf-8")
-            return ResourceInfo(is_dir=False, size=len(data), content_type="text/plain")
+            return ResourceInfo(is_dir=False, size=len(node.attribs[attr_name].encode("utf-8")), content_type="text/plain")
 
-        node = self._resolve(path)
+        node = self._resolve_node(path)
         return ResourceInfo(is_dir=True)
 
-    def list(self, path: str) -> list[str]:
-        path = _normalize(path)
-        parts = path.strip("/").split("/")
-
-        # Check for _attribs directory listing
-        if parts[-1] == "_attribs":
-            parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
-            parent = self._resolve(parent_path)
+    def list(self, path: list[str]) -> list[str]:
+        if len(path) > 0 and path[-1] == "_attribs":
+            parent = self._resolve_node(path[:-1])
             if not parent.attribs:
                 raise NotFoundError(f"Not a directory: {path}")
             return sorted(parent.attribs.keys())
 
-        node = self._resolve(path)
+        node = self._resolve_node(path)
         entries = []
         if node.text is not None:
             entries.append("_text")
@@ -134,24 +116,22 @@ class XmlBackend(Backend):
         entries.extend(sorted(node.children.keys()))
         return entries
 
-    def get(self, path: str) -> bytes:
-        path = _normalize(path)
-        parts = path.strip("/").split("/")
+    def get(self, path: list[str]) -> bytes:
+        if len(path) == 0:
+            raise NotFoundError(f"Not a file: {path}")
 
-        if parts[-1] == "_text":
-            parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
-            parent = self._resolve(parent_path)
+        last = path[-1]
+
+        if last == "_text":
+            parent = self._resolve_node(path[:-1])
             if parent.text is None:
                 raise NotFoundError(f"Not found: {path}")
             return parent.text.encode("utf-8")
 
-        # _attribs/attr_name
-        if len(parts) >= 2 and parts[-2] == "_attribs":
-            grandparent_path = "/" + "/".join(parts[:-2]) if len(parts) > 2 else "/"
-            grandparent = self._resolve(grandparent_path)
-            attr_name = parts[-1]
-            if not grandparent.attribs or attr_name not in grandparent.attribs:
+        if len(path) >= 2 and path[-2] == "_attribs":
+            node = self._resolve_node(path[:-2])
+            if not node.attribs or last not in node.attribs:
                 raise NotFoundError(f"Not found: {path}")
-            return grandparent.attribs[attr_name].encode("utf-8")
+            return node.attribs[last].encode("utf-8")
 
         raise NotFoundError(f"Not a file: {path}")

@@ -2,7 +2,7 @@
 
 import zipfile
 import mimetypes
-from backend import Backend, ResourceInfo, NotFoundError, BackendError, _normalize
+from backend import Backend, ResourceInfo, NotFoundError, BackendError
 
 
 class ZipBackend(Backend):
@@ -14,63 +14,54 @@ class ZipBackend(Backend):
         except (zipfile.BadZipFile, FileNotFoundError, OSError) as e:
             raise BackendError(f"Cannot open ZIP file: {e}") from e
 
-        # Build a set of directories and a dict of file infos for fast lookup.
+        # Build a set of directory tuples and a dict of file tuples for fast lookup.
         # ZIP files don't always have explicit directory entries, so we infer
         # directories from file paths.
-        self._files: dict[str, zipfile.ZipInfo] = {}  # normalized path -> ZipInfo
-        self._dirs: set[str] = {"/"}  # all known directories
+        self._files: dict[tuple, zipfile.ZipInfo] = {}  # path tuple -> ZipInfo
+        self._dirs: set[tuple] = {()}  # all known directories (empty tuple = root)
 
         for zi in self._zf.infolist():
-            # Normalize the path
-            name = "/" + zi.filename
+            parts = tuple(p for p in zi.filename.split("/") if p)
             if zi.is_dir():
-                self._dirs.add(_normalize(name))
+                self._dirs.add(parts)
             else:
-                norm = _normalize(name)
-                self._files[norm] = zi
+                self._files[parts] = zi
                 # Ensure all parent directories exist
-                parts = norm.strip("/").split("/")
                 for i in range(1, len(parts)):
-                    self._dirs.add("/" + "/".join(parts[:i]))
+                    self._dirs.add(parts[:i])
 
-    def info(self, path: str) -> ResourceInfo:
-        path = _normalize(path)
-        if path in self._dirs:
+    def info(self, path: list[str]) -> ResourceInfo:
+        key = tuple(path)
+        if key in self._dirs:
             return ResourceInfo(is_dir=True)
-        if path in self._files:
-            zi = self._files[path]
+        if key in self._files:
+            zi = self._files[key]
             ctype = mimetypes.guess_type(zi.filename)[0] or "application/octet-stream"
             return ResourceInfo(is_dir=False, size=zi.file_size, content_type=ctype)
         raise NotFoundError(f"Not found: {path}")
 
-    def list(self, path: str) -> list[str]:
-        path = _normalize(path)
-        if path not in self._dirs:
+    def list(self, path: list[str]) -> list[str]:
+        key = tuple(path)
+        if key not in self._dirs:
             raise NotFoundError(f"Not a directory: {path}")
 
-        prefix = path if path == "/" else path + "/"
+        depth = len(key)
         children = set()
-        # Check files
         for fpath in self._files:
-            if fpath.startswith(prefix):
-                rest = fpath[len(prefix):]
-                if "/" not in rest:
-                    children.add(rest)
-        # Check directories
+            if fpath[:depth] == key and len(fpath) == depth + 1:
+                children.add(fpath[depth])
         for dpath in self._dirs:
-            if dpath.startswith(prefix) and dpath != path:
-                rest = dpath[len(prefix):]
-                if "/" not in rest and rest:
-                    children.add(rest)
+            if dpath[:depth] == key and len(dpath) == depth + 1:
+                children.add(dpath[depth])
         return sorted(children)
 
-    def get(self, path: str) -> bytes:
-        path = _normalize(path)
-        if path in self._dirs:
+    def get(self, path: list[str]) -> bytes:
+        key = tuple(path)
+        if key in self._dirs:
             raise NotFoundError(f"Not a file: {path}")
-        if path not in self._files:
+        if key not in self._files:
             raise NotFoundError(f"Not found: {path}")
         try:
-            return self._zf.read(self._files[path].filename)
+            return self._zf.read(self._files[key].filename)
         except Exception as e:
             raise BackendError(f"Error reading from ZIP: {e}") from e

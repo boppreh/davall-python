@@ -6,11 +6,10 @@ import xml.etree.ElementTree as ET
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, quote, urlparse, parse_qs
 
-from backend import Backend, NotFoundError, BackendError, _normalize
+from backend import Backend, NotFoundError, BackendError
 
 
 DAV_NS = "DAV:"
-# Properties we always report
 SUPPORTED_PROPS = [
     "displayname",
     "getcontentlength",
@@ -19,18 +18,19 @@ SUPPORTED_PROPS = [
     "getlastmodified",
 ]
 
-READONLY_METHODS = frozenset(["GET", "HEAD", "OPTIONS", "PROPFIND"])
-WRITE_METHODS = frozenset([
-    "PUT", "DELETE", "MKCOL", "PROPPATCH", "MOVE", "COPY", "LOCK", "UNLOCK",
-    "POST", "PATCH",
-])
+
+def _parse_path(raw: str) -> list[str]:
+    """Parse a URL path into a list of segments. Handles decoding, slashes, dots."""
+    decoded = unquote(raw)
+    return [p for p in decoded.split("/") if p]
 
 
-def _prop_element(tag: str, text: str | None = None) -> ET.Element:
-    el = ET.SubElement(ET.Element("dummy"), f"{{{DAV_NS}}}{tag}")
-    if text is not None:
-        el.text = text
-    return el
+def _to_href(path: list[str], is_dir: bool) -> str:
+    """Convert a path list back to a URL-safe href string."""
+    href = "/" + "/".join(quote(p, safe="") for p in path)
+    if is_dir and not href.endswith("/"):
+        href += "/"
+    return href
 
 
 def _build_response_element(href: str, info, include_props: list[str] | None = None) -> ET.Element:
@@ -48,7 +48,6 @@ def _build_response_element(href: str, info, include_props: list[str] | None = N
     for pname in props_to_report:
         if pname == "displayname":
             el = ET.SubElement(prop, f"{{{DAV_NS}}}displayname")
-            # Extract name from href
             name = href.rstrip("/").rsplit("/", 1)[-1] or "/"
             el.text = unquote(name)
         elif pname == "getcontentlength":
@@ -92,21 +91,18 @@ def _parse_propfind_body(body: bytes) -> list[str] | None:
     Returns None for allprop (or empty body), or a list of property local names.
     """
     if not body or not body.strip():
-        return None  # allprop
+        return None
 
     root = ET.fromstring(body)
-    # Check for allprop
     if root.find(f"{{{DAV_NS}}}allprop") is not None:
         return None
 
-    # Check for prop
     prop_el = root.find(f"{{{DAV_NS}}}prop")
     if prop_el is None:
         return None
 
     props = []
     for child in prop_el:
-        # Strip namespace, we only support DAV: properties
         tag = child.tag
         if tag.startswith(f"{{{DAV_NS}}}"):
             tag = tag[len(f"{{{DAV_NS}}}"):]
@@ -117,11 +113,9 @@ def _parse_propfind_body(body: bytes) -> list[str] | None:
 class WebDAVHandler(BaseHTTPRequestHandler):
     """HTTP request handler for read-only WebDAV."""
 
-    # Set by the server
     backend: Backend
 
     def log_message(self, format, *args):
-        """Suppress default logging."""
         pass
 
     def _send_xml(self, status: int, xml_bytes: bytes):
@@ -139,13 +133,12 @@ class WebDAVHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _get_path(self) -> str:
+    def _parse_request_path(self) -> tuple[list[str], bool]:
+        """Parse the request URL into (path_segments, has_json_param)."""
         parsed = urlparse(self.path)
-        return _normalize(unquote(parsed.path))
-
-    def _has_json_param(self) -> bool:
-        parsed = urlparse(self.path)
-        return "json" in parse_qs(parsed.query, keep_blank_values=True)
+        path = _parse_path(parsed.path)
+        has_json = "json" in parse_qs(parsed.query, keep_blank_values=True)
+        return path, has_json
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -160,28 +153,26 @@ class WebDAVHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._handle_get(include_body=False)
 
-    def _build_json_subtree(self, path: str):
+    def _build_json_subtree(self, path: list[str]):
         """Recursively build a JSON-serializable subtree from a path."""
         info = self.backend.info(path)
         if not info.is_dir:
             data = self.backend.get(path)
-            # Try to decode as text
             try:
                 return data.decode("utf-8")
             except UnicodeDecodeError:
-                return None  # binary files become null in JSON
+                return None
 
         children = self.backend.list(path)
         result = {}
         for name in children:
-            child_path = path.rstrip("/") + "/" + name
-            result[name] = self._build_json_subtree(child_path)
+            result[name] = self._build_json_subtree(path + [name])
         return result
 
     def _handle_get(self, include_body: bool):
-        path = self._get_path()
+        path, has_json = self._parse_request_path()
 
-        if self._has_json_param():
+        if has_json:
             try:
                 tree = self._build_json_subtree(path)
             except NotFoundError:
@@ -209,7 +200,6 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             return
 
         if info.is_dir:
-            # For directories, return a simple text listing
             try:
                 children = self.backend.list(path)
             except BackendError as e:
@@ -239,10 +229,9 @@ class WebDAVHandler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
 
     def do_PROPFIND(self):
-        path = self._get_path()
+        path, _ = self._parse_request_path()
         depth = self.headers.get("Depth", "1")
 
-        # Read request body
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b""
         requested_props = _parse_propfind_body(body)
@@ -257,10 +246,7 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             return
 
         responses = []
-        href = quote(path, safe="/")
-        if info.is_dir and not href.endswith("/"):
-            href += "/"
-        responses.append(_build_response_element(href, info, requested_props))
+        responses.append(_build_response_element(_to_href(path, info.is_dir), info, requested_props))
 
         if info.is_dir and depth != "0":
             try:
@@ -270,44 +256,40 @@ class WebDAVHandler(BaseHTTPRequestHandler):
                 return
 
             for name in children:
-                child_path = path.rstrip("/") + "/" + name
+                child_path = path + [name]
                 try:
                     child_info = self.backend.info(child_path)
                 except BackendError:
-                    continue  # skip broken entries
+                    continue
 
-                child_href = quote(child_path, safe="/")
-                if child_info.is_dir and not child_href.endswith("/"):
-                    child_href += "/"
-                responses.append(_build_response_element(child_href, child_info, requested_props))
+                responses.append(_build_response_element(
+                    _to_href(child_path, child_info.is_dir), child_info, requested_props
+                ))
 
-                # Depth: infinity — recurse into subdirectories
                 if depth == "infinity" and child_info.is_dir:
                     self._propfind_recurse(child_path, responses, requested_props)
 
         xml_bytes = _multistatus_xml(responses)
         self._send_xml(207, xml_bytes)
 
-    def _propfind_recurse(self, dir_path: str, responses: list, requested_props):
+    def _propfind_recurse(self, dir_path: list[str], responses: list, requested_props):
         """Recursively add PROPFIND responses for all descendants."""
         try:
             children = self.backend.list(dir_path)
         except BackendError:
             return
         for name in children:
-            child_path = dir_path.rstrip("/") + "/" + name
+            child_path = dir_path + [name]
             try:
                 child_info = self.backend.info(child_path)
             except BackendError:
                 continue
-            child_href = quote(child_path, safe="/")
-            if child_info.is_dir and not child_href.endswith("/"):
-                child_href += "/"
-            responses.append(_build_response_element(child_href, child_info, requested_props))
+            responses.append(_build_response_element(
+                _to_href(child_path, child_info.is_dir), child_info, requested_props
+            ))
             if child_info.is_dir:
                 self._propfind_recurse(child_path, responses, requested_props)
 
-    # Reject all write methods
     def _method_not_allowed(self):
         self.send_response(405)
         self.send_header("Allow", "OPTIONS, GET, HEAD, PROPFIND")
