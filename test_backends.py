@@ -551,6 +551,67 @@ class TestMailboxBackend(unittest.TestCase):
             b.get(["nonexistent.eml"])
 
 
+class TestTomlBackend(unittest.TestCase):
+    def _make_toml(self, content: str) -> str:
+        f = tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w")
+        f.write(content)
+        f.close()
+        self._tmpfiles.append(f.name)
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_basic(self):
+        from backend_toml import TomlBackend
+        path = self._make_toml('[server]\nhost = "localhost"\nport = 8080\n')
+        b = TomlBackend(path)
+        self.assertTrue(b.info([]).is_dir)
+        self.assertEqual(b.list([]), ["server"])
+        self.assertTrue(b.info(["server"]).is_dir)
+        self.assertEqual(sorted(b.list(["server"])), ["host", "port"])
+        self.assertEqual(b.get(["server", "host"]), b"localhost")
+        self.assertEqual(b.get(["server", "port"]), b"8080")
+
+    def test_nested(self):
+        from backend_toml import TomlBackend
+        path = self._make_toml('[a]\n[a.b]\nc = "deep"\n')
+        b = TomlBackend(path)
+        self.assertTrue(b.info(["a", "b"]).is_dir)
+        self.assertEqual(b.get(["a", "b", "c"]), b"deep")
+
+    def test_array(self):
+        from backend_toml import TomlBackend
+        path = self._make_toml('items = [10, 20, 30]\n')
+        b = TomlBackend(path)
+        self.assertTrue(b.info(["items"]).is_dir)
+        self.assertEqual(b.list(["items"]), ["0", "1", "2"])
+        self.assertEqual(b.get(["items", "1"]), b"20")
+
+    def test_bool(self):
+        from backend_toml import TomlBackend
+        path = self._make_toml('flag = true\n')
+        b = TomlBackend(path)
+        self.assertEqual(b.get(["flag"]), b"true")
+
+    def test_not_found(self):
+        from backend_toml import TomlBackend
+        path = self._make_toml('[s]\nk = "v"\n')
+        b = TomlBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.info(["nonexistent"])
+
+    def test_bad_toml(self):
+        from backend_toml import TomlBackend
+        path = self._make_toml('= broken [[[')
+        with self.assertRaises(BackendError):
+            TomlBackend(path)
+
+
 class TestAstBackend(unittest.TestCase):
     def _make_py(self, content: str) -> str:
         f = tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w")

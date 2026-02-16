@@ -24,6 +24,7 @@ BACKENDS = {
     ".xml": ("backend_xml", "XmlBackend"),
     ".mbox": ("backend_mailbox", "MailboxBackend"),
     ".py": ("backend_ast", "AstBackend"),
+    ".toml": ("backend_toml", "TomlBackend"),
 }
 
 
