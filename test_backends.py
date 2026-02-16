@@ -212,20 +212,21 @@ class TestSqliteBackend(unittest.TestCase):
         # Table directory
         self.assertTrue(b.info("/users").is_dir)
         entries = b.list("/users")
-        self.assertEqual(entries, ["_schema.sql", "row_0.json", "row_1.json"])
+        self.assertEqual(entries, ["_schema.sql", "row_0", "row_1"])
 
         # Schema file
         schema = b.get("/users/_schema.sql")
         self.assertIn(b"CREATE TABLE", schema)
         self.assertIn(b"users", schema)
 
-        # Row files
-        row0 = json.loads(b.get("/users/row_0.json"))
-        self.assertEqual(row0["name"], "Alice")
-        self.assertEqual(row0["age"], 30)
+        # Row directories
+        self.assertTrue(b.info("/users/row_0").is_dir)
+        self.assertEqual(b.list("/users/row_0"), ["name", "age"])
+        self.assertEqual(b.get("/users/row_0/name"), b"Alice")
+        self.assertEqual(b.get("/users/row_0/age"), b"30")
 
-        row1 = json.loads(b.get("/users/row_1.json"))
-        self.assertEqual(row1["name"], "Bob")
+        self.assertEqual(b.get("/users/row_1/name"), b"Bob")
+        self.assertEqual(b.get("/users/row_1/age"), b"25")
 
     def test_multiple_tables(self):
         from backend_sqlite import SqliteBackend
@@ -249,7 +250,7 @@ class TestSqliteBackend(unittest.TestCase):
         with self.assertRaises(NotFoundError):
             b.info("/nonexistent")
         with self.assertRaises(NotFoundError):
-            b.get("/t/row_999.json")
+            b.info("/t/row_999")
 
     def test_info_sizes(self):
         from backend_sqlite import SqliteBackend
@@ -261,9 +262,18 @@ class TestSqliteBackend(unittest.TestCase):
         info = b.info("/t/_schema.sql")
         self.assertFalse(info.is_dir)
         self.assertGreater(info.size, 0)
-        info = b.info("/t/row_0.json")
+        info = b.info("/t/row_0/val")
         self.assertFalse(info.is_dir)
-        self.assertGreater(info.size, 0)
+        self.assertEqual(info.size, 5)
+
+    def test_null_value(self):
+        from backend_sqlite import SqliteBackend
+        path = self._make_db([
+            "CREATE TABLE t (val TEXT)",
+            "INSERT INTO t VALUES (NULL)",
+        ])
+        b = SqliteBackend(path)
+        self.assertEqual(b.get("/t/row_0/val"), b"")
 
 
 class TestJsonBackend(unittest.TestCase):
@@ -367,14 +377,17 @@ class TestCsvBackend(unittest.TestCase):
         self.assertTrue(b.info("/").is_dir)
         entries = b.list("/")
         self.assertEqual(entries[0], "_headers.txt")
-        self.assertIn("row_0000.json", entries)
-        self.assertIn("row_0001.json", entries)
+        self.assertIn("row_0000", entries)
+        self.assertIn("row_0001", entries)
 
         self.assertEqual(b.get("/_headers.txt"), b"name\nage")
 
-        row0 = json.loads(b.get("/row_0000.json"))
-        self.assertEqual(row0["name"], "Alice")
-        self.assertEqual(row0["age"], "30")
+        # Row directories
+        self.assertTrue(b.info("/row_0000").is_dir)
+        self.assertEqual(b.list("/row_0000"), ["name", "age"])
+        self.assertEqual(b.get("/row_0000/name"), b"Alice")
+        self.assertEqual(b.get("/row_0000/age"), b"30")
+        self.assertEqual(b.get("/row_0001/name"), b"Bob")
 
     def test_empty_csv(self):
         from backend_csv import CsvBackend
@@ -387,7 +400,7 @@ class TestCsvBackend(unittest.TestCase):
         path = self._make_csv("x\n1\n")
         b = CsvBackend(path)
         with self.assertRaises(NotFoundError):
-            b.get("/row_999.json")
+            b.info("/row_999")
         with self.assertRaises(NotFoundError):
             b.info("/nonexistent")
 
@@ -473,10 +486,11 @@ class TestXmlBackend(unittest.TestCase):
         path = self._make_xml('<root><item id="1" name="test"/></root>')
         b = XmlBackend(path)
         entries = b.list("/item")
-        self.assertIn("_attribs.json", entries)
-        attribs = json.loads(b.get("/item/_attribs.json"))
-        self.assertEqual(attribs["id"], "1")
-        self.assertEqual(attribs["name"], "test")
+        self.assertIn("_attribs", entries)
+        self.assertTrue(b.info("/item/_attribs").is_dir)
+        self.assertEqual(sorted(b.list("/item/_attribs")), ["id", "name"])
+        self.assertEqual(b.get("/item/_attribs/id"), b"1")
+        self.assertEqual(b.get("/item/_attribs/name"), b"test")
 
     def test_duplicate_tags(self):
         from backend_xml import XmlBackend

@@ -4,12 +4,12 @@ Structure:
     /
       tag_name/
         _text            — text content (if any)
-        _attribs.json    — attributes (if any)
+        _attribs/        — directory of attributes (if any)
+          attr_name      — file containing attribute value
         child_tag/       — child elements
         child_tag_1/     — duplicate tags get numeric suffixes
 """
 
-import json
 import xml.etree.ElementTree as ET
 from backend import Backend, ResourceInfo, NotFoundError, BackendError, _normalize
 
@@ -51,6 +51,10 @@ class _XmlNode:
             self.children[name] = _XmlNode(child_el)
 
 
+_SPECIAL_FILES = ("_text",)
+_SPECIAL_DIRS = ("_attribs",)
+
+
 class XmlBackend(Backend):
     """Expose an XML file as a read-only filesystem."""
 
@@ -68,8 +72,8 @@ class XmlBackend(Backend):
         parts = path.strip("/").split("/")
         node = self._root
         for part in parts:
-            if part in ("_text", "_attribs.json"):
-                raise NotFoundError("_text/_attribs are files, not traversable")
+            if part in _SPECIAL_FILES or part in _SPECIAL_DIRS:
+                raise NotFoundError("Special entries are not traversable as nodes")
             if part not in node.children:
                 raise NotFoundError(f"Not found: {path}")
             node = node.children[part]
@@ -77,50 +81,77 @@ class XmlBackend(Backend):
 
     def info(self, path: str) -> ResourceInfo:
         path = _normalize(path)
-
-        # Check for special files
         parts = path.strip("/").split("/")
-        if len(parts) >= 1 and parts[-1] in ("_text", "_attribs.json"):
-            # Resolve parent
+
+        # Check for _text file
+        if parts[-1] == "_text":
             parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
             parent = self._resolve(parent_path)
-            if parts[-1] == "_text":
-                if parent.text is None:
-                    raise NotFoundError(f"Not found: {path}")
-                data = parent.text.encode("utf-8")
-                return ResourceInfo(is_dir=False, size=len(data), content_type="text/plain")
-            else:  # _attribs.json
-                if parent.attribs is None:
-                    raise NotFoundError(f"Not found: {path}")
-                data = json.dumps(parent.attribs, indent=2).encode("utf-8")
-                return ResourceInfo(is_dir=False, size=len(data), content_type="application/json")
+            if parent.text is None:
+                raise NotFoundError(f"Not found: {path}")
+            data = parent.text.encode("utf-8")
+            return ResourceInfo(is_dir=False, size=len(data), content_type="text/plain")
+
+        # Check for _attribs directory
+        if parts[-1] == "_attribs":
+            parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+            parent = self._resolve(parent_path)
+            if not parent.attribs:
+                raise NotFoundError(f"Not found: {path}")
+            return ResourceInfo(is_dir=True)
+
+        # Check for _attribs/attr_name file
+        if len(parts) >= 2 and parts[-2] == "_attribs":
+            grandparent_path = "/" + "/".join(parts[:-2]) if len(parts) > 2 else "/"
+            grandparent = self._resolve(grandparent_path)
+            attr_name = parts[-1]
+            if not grandparent.attribs or attr_name not in grandparent.attribs:
+                raise NotFoundError(f"Not found: {path}")
+            data = grandparent.attribs[attr_name].encode("utf-8")
+            return ResourceInfo(is_dir=False, size=len(data), content_type="text/plain")
 
         node = self._resolve(path)
         return ResourceInfo(is_dir=True)
 
     def list(self, path: str) -> list[str]:
+        path = _normalize(path)
+        parts = path.strip("/").split("/")
+
+        # Check for _attribs directory listing
+        if parts[-1] == "_attribs":
+            parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+            parent = self._resolve(parent_path)
+            if not parent.attribs:
+                raise NotFoundError(f"Not a directory: {path}")
+            return sorted(parent.attribs.keys())
+
         node = self._resolve(path)
         entries = []
         if node.text is not None:
             entries.append("_text")
         if node.attribs:
-            entries.append("_attribs.json")
+            entries.append("_attribs")
         entries.extend(sorted(node.children.keys()))
         return entries
 
     def get(self, path: str) -> bytes:
         path = _normalize(path)
         parts = path.strip("/").split("/")
-        if len(parts) >= 1 and parts[-1] in ("_text", "_attribs.json"):
+
+        if parts[-1] == "_text":
             parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
             parent = self._resolve(parent_path)
-            if parts[-1] == "_text":
-                if parent.text is None:
-                    raise NotFoundError(f"Not found: {path}")
-                return parent.text.encode("utf-8")
-            else:
-                if parent.attribs is None:
-                    raise NotFoundError(f"Not found: {path}")
-                return json.dumps(parent.attribs, indent=2).encode("utf-8")
+            if parent.text is None:
+                raise NotFoundError(f"Not found: {path}")
+            return parent.text.encode("utf-8")
+
+        # _attribs/attr_name
+        if len(parts) >= 2 and parts[-2] == "_attribs":
+            grandparent_path = "/" + "/".join(parts[:-2]) if len(parts) > 2 else "/"
+            grandparent = self._resolve(grandparent_path)
+            attr_name = parts[-1]
+            if not grandparent.attribs or attr_name not in grandparent.attribs:
+                raise NotFoundError(f"Not found: {path}")
+            return grandparent.attribs[attr_name].encode("utf-8")
 
         raise NotFoundError(f"Not a file: {path}")

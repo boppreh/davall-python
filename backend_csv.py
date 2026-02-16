@@ -3,13 +3,13 @@
 Structure:
     /
       _headers.txt       — column names, one per line
-      row_0000.json      — {"col1": "val1", "col2": "val2"}
-      row_0001.json
-      ...
+      row_0000/
+        column_name      — file containing the cell value
+      row_0001/
+        ...
 """
 
 import csv
-import json
 from backend import Backend, ResourceInfo, NotFoundError, BackendError, _normalize
 
 
@@ -26,59 +26,79 @@ class CsvBackend(Backend):
             raise BackendError(f"Cannot read CSV file: {e}") from e
 
         self._headers_bytes = "\n".join(self._headers).encode("utf-8")
-        # Pre-format row width for filenames
         self._width = max(4, len(str(len(self._rows))))
 
-    def _row_filename(self, index: int) -> str:
-        return f"row_{index:0{self._width}d}.json"
+    def _row_dirname(self, index: int) -> str:
+        return f"row_{index:0{self._width}d}"
 
-    def _row_bytes(self, index: int) -> bytes:
-        if index < 0 or index >= len(self._rows):
-            raise NotFoundError(f"Row {index} not found")
-        return json.dumps(self._rows[index], indent=2).encode("utf-8")
+    def _parse_row_name(self, name: str) -> int | None:
+        if not name.startswith("row_"):
+            return None
+        try:
+            return int(name[4:])
+        except ValueError:
+            return None
 
     def info(self, path: str) -> ResourceInfo:
         path = _normalize(path)
         if path == "/":
             return ResourceInfo(is_dir=True)
 
-        name = path.strip("/")
-        if "/" in name:
+        parts = path.strip("/").split("/")
+
+        if len(parts) == 1:
+            name = parts[0]
+            if name == "_headers.txt":
+                return ResourceInfo(is_dir=False, size=len(self._headers_bytes), content_type="text/plain")
+            row_idx = self._parse_row_name(name)
+            if row_idx is not None and 0 <= row_idx < len(self._rows):
+                return ResourceInfo(is_dir=True)
             raise NotFoundError(f"Not found: {path}")
 
-        if name == "_headers.txt":
-            return ResourceInfo(is_dir=False, size=len(self._headers_bytes), content_type="text/plain")
-
-        if name.startswith("row_") and name.endswith(".json"):
-            try:
-                index = int(name[4:-5])
-            except ValueError:
+        if len(parts) == 2:
+            row_name, column = parts
+            row_idx = self._parse_row_name(row_name)
+            if row_idx is None or row_idx < 0 or row_idx >= len(self._rows):
                 raise NotFoundError(f"Not found: {path}")
-            data = self._row_bytes(index)
-            return ResourceInfo(is_dir=False, size=len(data), content_type="application/json")
+            if column not in self._headers:
+                raise NotFoundError(f"Not found: {path}")
+            value = (self._rows[row_idx].get(column) or "").encode("utf-8")
+            return ResourceInfo(is_dir=False, size=len(value), content_type="text/plain")
 
         raise NotFoundError(f"Not found: {path}")
 
     def list(self, path: str) -> list[str]:
         path = _normalize(path)
-        if path != "/":
+        if path == "/":
+            entries = ["_headers.txt"]
+            entries.extend(self._row_dirname(i) for i in range(len(self._rows)))
+            return entries
+
+        parts = path.strip("/").split("/")
+        if len(parts) == 1:
+            row_idx = self._parse_row_name(parts[0])
+            if row_idx is not None and 0 <= row_idx < len(self._rows):
+                return list(self._headers)
             raise NotFoundError(f"Not a directory: {path}")
-        entries = ["_headers.txt"]
-        entries.extend(self._row_filename(i) for i in range(len(self._rows)))
-        return entries
+
+        raise NotFoundError(f"Not a directory: {path}")
 
     def get(self, path: str) -> bytes:
         path = _normalize(path)
-        name = path.strip("/")
+        parts = path.strip("/").split("/")
 
-        if name == "_headers.txt":
-            return self._headers_bytes
+        if len(parts) == 1:
+            if parts[0] == "_headers.txt":
+                return self._headers_bytes
+            raise NotFoundError(f"Not found: {path}")
 
-        if name.startswith("row_") and name.endswith(".json"):
-            try:
-                index = int(name[4:-5])
-            except ValueError:
+        if len(parts) == 2:
+            row_name, column = parts
+            row_idx = self._parse_row_name(row_name)
+            if row_idx is None or row_idx < 0 or row_idx >= len(self._rows):
                 raise NotFoundError(f"Not found: {path}")
-            return self._row_bytes(index)
+            if column not in self._headers:
+                raise NotFoundError(f"Not found: {path}")
+            return (self._rows[row_idx].get(column) or "").encode("utf-8")
 
         raise NotFoundError(f"Not found: {path}")
