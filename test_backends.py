@@ -399,5 +399,48 @@ class TestCsvBackend(unittest.TestCase):
         self.assertGreater(info.size, 0)
 
 
+class TestIniBackend(unittest.TestCase):
+    def _make_ini(self, content: str) -> str:
+        f = tempfile.NamedTemporaryFile(suffix=".ini", delete=False, mode="w")
+        f.write(content)
+        f.close()
+        self._tmpfiles.append(f.name)
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_basic(self):
+        from backend_ini import IniBackend
+        path = self._make_ini("[server]\nhost = localhost\nport = 8080\n\n[database]\nurl = sqlite:///db\n")
+        b = IniBackend(path)
+        self.assertTrue(b.info("/").is_dir)
+        self.assertEqual(b.list("/"), ["database", "server"])
+        self.assertTrue(b.info("/server").is_dir)
+        self.assertEqual(sorted(b.list("/server")), ["host", "port"])
+        self.assertEqual(b.get("/server/host"), b"localhost")
+        self.assertEqual(b.get("/server/port"), b"8080")
+        self.assertEqual(b.get("/database/url"), b"sqlite:///db")
+
+    def test_empty_section(self):
+        from backend_ini import IniBackend
+        path = self._make_ini("[empty]\n")
+        b = IniBackend(path)
+        self.assertEqual(b.list("/empty"), [])
+
+    def test_not_found(self):
+        from backend_ini import IniBackend
+        path = self._make_ini("[s]\nk = v\n")
+        b = IniBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.info("/nonexistent")
+        with self.assertRaises(NotFoundError):
+            b.get("/s/nonexistent")
+
+
 if __name__ == "__main__":
     unittest.main()
