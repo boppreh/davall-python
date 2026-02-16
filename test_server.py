@@ -1,9 +1,11 @@
 """Tests for the WebDAV server and MemoryBackend."""
 
+import io
 import json
 import threading
 import unittest
 import xml.etree.ElementTree as ET
+import zipfile
 from http.client import HTTPConnection
 
 from backend import MemoryBackend, NotFoundError, ResourceInfo
@@ -326,6 +328,63 @@ class TestWebDAVServer(unittest.TestCase):
         conn.close()
         self.assertEqual(resp.status, 200)
         self.assertIn("application/json", resp.getheader("Content-Type"))
+        self.assertEqual(data, b"")
+        self.assertGreater(int(resp.getheader("Content-Length")), 0)
+
+
+    # --- ?zip subtree ---
+
+    def _get_zip(self, path: str) -> zipfile.ZipFile:
+        conn = self._conn()
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.getheader("Content-Type"), "application/zip")
+        return zipfile.ZipFile(io.BytesIO(data))
+
+    def test_zip_root(self):
+        with self._get_zip("/?zip") as zf:
+            names = sorted(zf.namelist())
+            self.assertIn("hello.txt", names)
+            self.assertIn("docs/guide.txt", names)
+            self.assertIn("docs/nested/deep.txt", names)
+            self.assertEqual(zf.read("hello.txt"), b"Hello, world!")
+            self.assertEqual(zf.read("docs/guide.txt"), b"A guide to things")
+
+    def test_zip_subdir(self):
+        with self._get_zip("/docs?zip") as zf:
+            names = sorted(zf.namelist())
+            self.assertIn("guide.txt", names)
+            self.assertIn("nested/deep.txt", names)
+            self.assertEqual(zf.read("guide.txt"), b"A guide to things")
+
+    def test_zip_file(self):
+        with self._get_zip("/hello.txt?zip") as zf:
+            self.assertEqual(zf.namelist(), ["hello.txt"])
+            self.assertEqual(zf.read("hello.txt"), b"Hello, world!")
+
+    def test_zip_binary(self):
+        with self._get_zip("/binary.bin?zip") as zf:
+            self.assertEqual(zf.read("binary.bin"), b"\x00\x01\x02\x03")
+
+    def test_zip_not_found(self):
+        conn = self._conn()
+        conn.request("GET", "/nonexistent?zip")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 404)
+
+    def test_zip_head(self):
+        conn = self._conn()
+        conn.request("HEAD", "/docs?zip")
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.getheader("Content-Type"), "application/zip")
         self.assertEqual(data, b"")
         self.assertGreater(int(resp.getheader("Content-Length")), 0)
 

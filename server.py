@@ -2,6 +2,7 @@
 
 import io
 import json
+import zipfile
 import xml.etree.ElementTree as ET
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, quote, urlparse, parse_qs
@@ -133,12 +134,19 @@ class WebDAVHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _parse_request_path(self) -> tuple[list[str], bool]:
-        """Parse the request URL into (path_segments, has_json_param)."""
+    def _parse_request_path(self) -> tuple[list[str], str | None]:
+        """Parse the request URL into (path_segments, dump_format).
+
+        dump_format is "json", "zip", or None.
+        """
         parsed = urlparse(self.path)
         path = _parse_path(parsed.path)
-        has_json = "json" in parse_qs(parsed.query, keep_blank_values=True)
-        return path, has_json
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        if "json" in qs:
+            return path, "json"
+        if "zip" in qs:
+            return path, "zip"
+        return path, None
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -169,10 +177,33 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             result[name] = self._build_json_subtree(path + [name])
         return result
 
-    def _handle_get(self, include_body: bool):
-        path, has_json = self._parse_request_path()
+    def _build_zip_subtree(self, path: list[str]) -> bytes:
+        """Recursively build a ZIP archive from a path."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            info = self.backend.info(path)
+            if not info.is_dir:
+                data = self.backend.get(path)
+                zf.writestr(path[-1] if path else "data", data)
+            else:
+                self._zip_recurse(zf, path)
+        return buf.getvalue()
 
-        if has_json:
+    def _zip_recurse(self, zf: zipfile.ZipFile, base: list[str], rel: list[str] = []):
+        """Add all files under base to the ZIP archive with rel as prefix."""
+        for name in self.backend.list(base):
+            child = base + [name]
+            child_rel = rel + [name]
+            info = self.backend.info(child)
+            if info.is_dir:
+                self._zip_recurse(zf, child, child_rel)
+            else:
+                zf.writestr("/".join(child_rel), self.backend.get(child))
+
+    def _handle_get(self, include_body: bool):
+        path, dump_format = self._parse_request_path()
+
+        if dump_format == "json":
             try:
                 tree = self._build_json_subtree(path)
             except NotFoundError:
@@ -184,6 +215,23 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             body = json.dumps(tree, indent=2, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if include_body:
+                self.wfile.write(body)
+            return
+
+        if dump_format == "zip":
+            try:
+                body = self._build_zip_subtree(path)
+            except NotFoundError:
+                self._send_error(404, "Not Found")
+                return
+            except BackendError as e:
+                self._send_error(500, str(e))
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if include_body:
