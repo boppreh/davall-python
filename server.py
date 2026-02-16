@@ -193,40 +193,41 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             else:
                 zf.writestr("/".join(child_rel), self.backend.get(child))
 
+    def _try(self, fn, include_body: bool = True):
+        """Call fn(), returning its result. On backend errors, send an error response and return None."""
+        try:
+            return fn()
+        except NotFoundError:
+            self._send(404, b"Not Found", "text/plain", include_body)
+            return None
+        except BackendError as e:
+            self._send(500, str(e).encode(), "text/plain", include_body)
+            return None
+
     def _handle_get(self, include_body: bool):
         path, dump_format = self._parse_request_path()
 
         if dump_format == "json":
-            try:
-                tree = self._build_json_subtree(path)
-            except NotFoundError:
-                return self._send(404, b"Not Found", "text/plain", include_body)
-            except BackendError as e:
-                return self._send(500, str(e).encode(), "text/plain", include_body)
+            tree = self._try(lambda: self._build_json_subtree(path), include_body)
+            if tree is None:
+                return
             body = json.dumps(tree, indent=2, ensure_ascii=False).encode("utf-8")
             return self._send(200, body, "application/json; charset=utf-8", include_body)
 
         if dump_format == "zip":
-            try:
-                body = self._build_zip_subtree(path)
-            except NotFoundError:
-                return self._send(404, b"Not Found", "text/plain", include_body)
-            except BackendError as e:
-                return self._send(500, str(e).encode(), "text/plain", include_body)
+            body = self._try(lambda: self._build_zip_subtree(path), include_body)
+            if body is None:
+                return
             return self._send(200, body, "application/zip", include_body)
 
-        try:
-            info = self.backend.info(path)
-        except NotFoundError:
-            return self._send(404, b"Not Found", "text/plain", include_body)
-        except BackendError as e:
-            return self._send(500, str(e).encode(), "text/plain", include_body)
+        info = self._try(lambda: self.backend.info(path), include_body)
+        if info is None:
+            return
 
         if info.is_dir:
-            try:
-                children = self.backend.list(path)
-            except BackendError as e:
-                return self._send(500, str(e).encode(), "text/plain", include_body)
+            children = self._try(lambda: self.backend.list(path), include_body)
+            if children is None:
+                return
             dir_name = "/" + "/".join(path) if path else "/"
             lines = [f"<html><head><title>{dir_name}</title></head><body>"]
             lines.append(f"<h1>{dir_name}</h1><ul>")
@@ -243,12 +244,9 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             body = "\n".join(lines).encode("utf-8")
             return self._send(200, body, "text/html; charset=utf-8", include_body)
         else:
-            try:
-                data = self.backend.get(path)
-            except NotFoundError:
-                return self._send(404, b"Not Found", "text/plain", include_body)
-            except BackendError as e:
-                return self._send(500, str(e).encode(), "text/plain", include_body)
+            data = self._try(lambda: self.backend.get(path), include_body)
+            if data is None:
+                return
             return self._send(200, data, info.content_type, include_body)
 
     def do_PROPFIND(self):
@@ -259,21 +257,17 @@ class WebDAVHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length) if content_length > 0 else b""
         requested_props = _parse_propfind_body(body)
 
-        try:
-            info = self.backend.info(path)
-        except NotFoundError:
-            return self._send(404, b"Not Found", "text/plain")
-        except BackendError as e:
-            return self._send(500, str(e).encode(), "text/plain")
+        info = self._try(lambda: self.backend.info(path))
+        if info is None:
+            return
 
         responses = []
         responses.append(_build_response_element(_to_href(path, info.is_dir), info, requested_props))
 
         if info.is_dir and depth != "0":
-            try:
-                children = self.backend.list(path)
-            except BackendError as e:
-                return self._send(500, str(e).encode(), "text/plain")
+            children = self._try(lambda: self.backend.list(path))
+            if children is None:
+                return
 
             for name in children:
                 child_path = path + [name]
