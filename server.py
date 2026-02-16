@@ -119,20 +119,13 @@ class WebDAVHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def _send_xml(self, status: int, xml_bytes: bytes):
+    def _send(self, status: int, body: bytes, content_type: str, include_body: bool = True):
         self.send_response(status)
-        self.send_header("Content-Type", "application/xml; charset=utf-8")
-        self.send_header("Content-Length", str(len(xml_bytes)))
-        self.end_headers()
-        self.wfile.write(xml_bytes)
-
-    def _send_error(self, code: int, message: str = ""):
-        body = message.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if include_body:
+            self.wfile.write(body)
 
     def _parse_request_path(self) -> tuple[list[str], str | None]:
         """Parse the request URL into (path_segments, dump_format).
@@ -207,52 +200,33 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             try:
                 tree = self._build_json_subtree(path)
             except NotFoundError:
-                self._send_error(404, "Not Found")
-                return
+                return self._send(404, b"Not Found", "text/plain", include_body)
             except BackendError as e:
-                self._send_error(500, str(e))
-                return
+                return self._send(500, str(e).encode(), "text/plain", include_body)
             body = json.dumps(tree, indent=2, ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            if include_body:
-                self.wfile.write(body)
-            return
+            return self._send(200, body, "application/json; charset=utf-8", include_body)
 
         if dump_format == "zip":
             try:
                 body = self._build_zip_subtree(path)
             except NotFoundError:
-                self._send_error(404, "Not Found")
-                return
+                return self._send(404, b"Not Found", "text/plain", include_body)
             except BackendError as e:
-                self._send_error(500, str(e))
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            if include_body:
-                self.wfile.write(body)
-            return
+                return self._send(500, str(e).encode(), "text/plain", include_body)
+            return self._send(200, body, "application/zip", include_body)
 
         try:
             info = self.backend.info(path)
         except NotFoundError:
-            self._send_error(404, "Not Found")
-            return
+            return self._send(404, b"Not Found", "text/plain", include_body)
         except BackendError as e:
-            self._send_error(500, str(e))
-            return
+            return self._send(500, str(e).encode(), "text/plain", include_body)
 
         if info.is_dir:
             try:
                 children = self.backend.list(path)
             except BackendError as e:
-                self._send_error(500, str(e))
-                return
+                return self._send(500, str(e).encode(), "text/plain", include_body)
             dir_name = "/" + "/".join(path) if path else "/"
             lines = [f"<html><head><title>{dir_name}</title></head><body>"]
             lines.append(f"<h1>{dir_name}</h1><ul>")
@@ -267,27 +241,15 @@ class WebDAVHandler(BaseHTTPRequestHandler):
                 lines.append(f'<li><a href="{href}">{name}</a></li>')
             lines.append("</ul></body></html>")
             body = "\n".join(lines).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            if include_body:
-                self.wfile.write(body)
+            return self._send(200, body, "text/html; charset=utf-8", include_body)
         else:
             try:
                 data = self.backend.get(path)
             except NotFoundError:
-                self._send_error(404, "Not Found")
-                return
+                return self._send(404, b"Not Found", "text/plain", include_body)
             except BackendError as e:
-                self._send_error(500, str(e))
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", info.content_type)
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            if include_body:
-                self.wfile.write(data)
+                return self._send(500, str(e).encode(), "text/plain", include_body)
+            return self._send(200, data, info.content_type, include_body)
 
     def do_PROPFIND(self):
         path, _ = self._parse_request_path()
@@ -300,11 +262,9 @@ class WebDAVHandler(BaseHTTPRequestHandler):
         try:
             info = self.backend.info(path)
         except NotFoundError:
-            self._send_error(404, "Not Found")
-            return
+            return self._send(404, b"Not Found", "text/plain")
         except BackendError as e:
-            self._send_error(500, str(e))
-            return
+            return self._send(500, str(e).encode(), "text/plain")
 
         responses = []
         responses.append(_build_response_element(_to_href(path, info.is_dir), info, requested_props))
@@ -313,8 +273,7 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             try:
                 children = self.backend.list(path)
             except BackendError as e:
-                self._send_error(500, str(e))
-                return
+                return self._send(500, str(e).encode(), "text/plain")
 
             for name in children:
                 child_path = path + [name]
@@ -331,7 +290,7 @@ class WebDAVHandler(BaseHTTPRequestHandler):
                     self._propfind_recurse(child_path, responses, requested_props)
 
         xml_bytes = _multistatus_xml(responses)
-        self._send_xml(207, xml_bytes)
+        self._send(207, xml_bytes, "application/xml; charset=utf-8")
 
     def _propfind_recurse(self, dir_path: list[str], responses: list, requested_props):
         """Recursively add PROPFIND responses for all descendants."""
