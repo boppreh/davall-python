@@ -253,9 +253,22 @@ class WebDAVHandler(BaseHTTPRequestHandler):
             except BackendError as e:
                 self._send_error(500, str(e))
                 return
-            body = "\n".join(children).encode("utf-8")
+            dir_name = "/" + "/".join(path) if path else "/"
+            lines = [f"<html><head><title>{dir_name}</title></head><body>"]
+            lines.append(f"<h1>{dir_name}</h1><ul>")
+            if path:
+                lines.append('<li><a href="../">..</a></li>')
+            for name in children:
+                try:
+                    child_info = self.backend.info(path + [name])
+                    href = quote(name, safe="") + ("/" if child_info.is_dir else "")
+                except BackendError:
+                    href = quote(name, safe="")
+                lines.append(f'<li><a href="{href}">{name}</a></li>')
+            lines.append("</ul></body></html>")
+            body = "\n".join(lines).encode("utf-8")
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if include_body:
