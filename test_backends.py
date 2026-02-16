@@ -551,6 +551,72 @@ class TestMailboxBackend(unittest.TestCase):
             b.get(["nonexistent.eml"])
 
 
+class TestHtmlBackend(unittest.TestCase):
+    def _make_html(self, content: str) -> str:
+        f = tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w")
+        f.write(content)
+        f.close()
+        self._tmpfiles.append(f.name)
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_basic(self):
+        from backend_html import HtmlBackend
+        path = self._make_html('<html><body><p>Hello</p></body></html>')
+        b = HtmlBackend(path)
+        self.assertTrue(b.info([]).is_dir)
+        entries = b.list([])
+        self.assertIn("html", entries)
+        self.assertEqual(b.get(["html", "body", "p", "_text"]), b"Hello")
+
+    def test_attributes(self):
+        from backend_html import HtmlBackend
+        path = self._make_html('<html><body><div id="main" class="container">Text</div></body></html>')
+        b = HtmlBackend(path)
+        self.assertIn("_attribs", b.list(["html", "body", "div"]))
+        self.assertEqual(sorted(b.list(["html", "body", "div", "_attribs"])), ["class", "id"])
+        self.assertEqual(b.get(["html", "body", "div", "_attribs", "id"]), b"main")
+        self.assertEqual(b.get(["html", "body", "div", "_attribs", "class"]), b"container")
+
+    def test_duplicate_tags(self):
+        from backend_html import HtmlBackend
+        path = self._make_html('<html><body><p>A</p><p>B</p></body></html>')
+        b = HtmlBackend(path)
+        entries = b.list(["html", "body"])
+        self.assertIn("p_0", entries)
+        self.assertIn("p_1", entries)
+        self.assertEqual(b.get(["html", "body", "p_0", "_text"]), b"A")
+        self.assertEqual(b.get(["html", "body", "p_1", "_text"]), b"B")
+
+    def test_self_closing(self):
+        from backend_html import HtmlBackend
+        path = self._make_html('<html><head><meta charset="utf-8"></head><body></body></html>')
+        b = HtmlBackend(path)
+        self.assertIn("meta", b.list(["html", "head"]))
+        self.assertEqual(b.get(["html", "head", "meta", "_attribs", "charset"]), b"utf-8")
+
+    def test_no_text(self):
+        from backend_html import HtmlBackend
+        path = self._make_html('<html><body></body></html>')
+        b = HtmlBackend(path)
+        self.assertNotIn("_text", b.list(["html", "body"]))
+
+    def test_not_found(self):
+        from backend_html import HtmlBackend
+        path = self._make_html('<html></html>')
+        b = HtmlBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.info(["nonexistent"])
+        with self.assertRaises(NotFoundError):
+            b.get(["html", "_text"])
+
+
 class TestOsInfoBackend(unittest.TestCase):
     def test_basic(self):
         from backend_osinfo import OsInfoBackend
