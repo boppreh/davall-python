@@ -2,6 +2,7 @@
 
 import io
 import json
+import mailbox
 import os
 import sqlite3
 import tarfile
@@ -513,6 +514,64 @@ class TestXmlBackend(unittest.TestCase):
         path = self._make_xml('not xml at all <<<')
         with self.assertRaises(BackendError):
             XmlBackend(path)
+
+
+class TestMailboxBackend(unittest.TestCase):
+    def _make_mbox(self, messages: list[tuple[str, str]]) -> str:
+        """Create mbox with (subject, body) tuples."""
+        f = tempfile.NamedTemporaryFile(suffix=".mbox", delete=False)
+        f.close()
+        self._tmpfiles.append(f.name)
+        mbox = mailbox.mbox(f.name)
+        for subject, body in messages:
+            msg = mailbox.mboxMessage()
+            msg["Subject"] = subject
+            msg["From"] = "test@example.com"
+            msg.set_payload(body)
+            mbox.add(msg)
+        mbox.flush()
+        mbox.close()
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+        import mailbox as mb
+        self._mailbox = mb
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_basic(self):
+        from backend_mailbox import MailboxBackend
+        path = self._make_mbox([
+            ("Hello World", "First message body"),
+            ("Test Email", "Second message"),
+        ])
+        b = MailboxBackend(path)
+        self.assertTrue(b.info("/").is_dir)
+        entries = b.list("/")
+        self.assertEqual(len(entries), 2)
+        self.assertIn("Hello_World", entries[0])
+        self.assertTrue(entries[0].endswith(".eml"))
+
+        # Read first message
+        data = b.get("/" + entries[0])
+        self.assertIn(b"Hello World", data)
+        self.assertIn(b"First message body", data)
+
+    def test_empty_mbox(self):
+        from backend_mailbox import MailboxBackend
+        path = self._make_mbox([])
+        b = MailboxBackend(path)
+        self.assertEqual(b.list("/"), [])
+
+    def test_not_found(self):
+        from backend_mailbox import MailboxBackend
+        path = self._make_mbox([("Test", "body")])
+        b = MailboxBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.get("/nonexistent.eml")
 
 
 if __name__ == "__main__":
