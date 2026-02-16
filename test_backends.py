@@ -551,6 +551,56 @@ class TestMailboxBackend(unittest.TestCase):
             b.get(["nonexistent.eml"])
 
 
+class TestOsInfoBackend(unittest.TestCase):
+    def test_basic(self):
+        from backend_osinfo import OsInfoBackend
+        b = OsInfoBackend()
+        self.assertTrue(b.info([]).is_dir)
+        entries = b.list([])
+        self.assertIn("platform", entries)
+        self.assertIn("env", entries)
+        self.assertIn("pid", entries)
+
+    def test_platform(self):
+        from backend_osinfo import OsInfoBackend
+        import platform
+        b = OsInfoBackend()
+        self.assertTrue(b.info(["platform"]).is_dir)
+        self.assertEqual(b.get(["platform", "system"]), platform.system().encode("utf-8"))
+        self.assertEqual(b.get(["platform", "python_version"]), platform.python_version().encode("utf-8"))
+
+    def test_env(self):
+        from backend_osinfo import OsInfoBackend
+        b = OsInfoBackend()
+        self.assertTrue(b.info(["env"]).is_dir)
+        entries = b.list(["env"])
+        self.assertIn("PATH", entries)
+        self.assertEqual(b.get(["env", "PATH"]), os.environ["PATH"].encode("utf-8"))
+
+    def test_scalar_files(self):
+        from backend_osinfo import OsInfoBackend
+        b = OsInfoBackend()
+        info = b.info(["pid"])
+        self.assertFalse(info.is_dir)
+        self.assertGreater(info.size, 0)
+        pid_val = int(b.get(["pid"]))
+        self.assertEqual(pid_val, os.getpid())
+
+    def test_not_found(self):
+        from backend_osinfo import OsInfoBackend
+        b = OsInfoBackend()
+        with self.assertRaises(NotFoundError):
+            b.info(["nonexistent"])
+        with self.assertRaises(NotFoundError):
+            b.get(["platform", "nonexistent"])
+
+    def test_get_dir_raises(self):
+        from backend_osinfo import OsInfoBackend
+        b = OsInfoBackend()
+        with self.assertRaises(NotFoundError):
+            b.get(["platform"])
+
+
 class TestTomlBackend(unittest.TestCase):
     def _make_toml(self, content: str) -> str:
         f = tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w")

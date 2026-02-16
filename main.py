@@ -60,24 +60,31 @@ def main():
     parser = argparse.ArgumentParser(
         description="davall — read-only WebDAV server for structured data"
     )
-    parser.add_argument("file", help="File to mount")
+    parser.add_argument("file", nargs="?", help="File to mount")
     parser.add_argument("-p", "--port", type=int, default=8080, help="Port to listen on")
     parser.add_argument("--host", default="localhost", help="Host to bind to")
-    parser.add_argument("-t", "--type", dest="backend_type", help="Force backend type")
+    parser.add_argument("-t", "--type", dest="backend_type", help="Force backend type (e.g. osinfo)")
     args = parser.parse_args()
 
-    if not os.path.exists(args.file):
-        print(f"Error: {args.file} not found", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        backend = load_backend(args.file, args.backend_type)
-    except (BackendError, ValueError) as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+    if args.backend_type == "osinfo":
+        from backend_osinfo import OsInfoBackend
+        backend = OsInfoBackend()
+        label = "OS info"
+    elif args.file is None:
+        parser.error("file is required (unless using --type osinfo)")
+    else:
+        if not os.path.exists(args.file):
+            print(f"Error: {args.file} not found", file=sys.stderr)
+            sys.exit(1)
+        try:
+            backend = load_backend(args.file, args.backend_type)
+        except (BackendError, ValueError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        label = args.file
 
     server = make_server(backend, args.host, args.port)
-    print(f"Serving {args.file} on http://{args.host}:{args.port}/")
+    print(f"Serving {label} on http://{args.host}:{args.port}/")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
