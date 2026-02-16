@@ -344,5 +344,60 @@ class TestJsonBackend(unittest.TestCase):
             JsonBackend(path)
 
 
+class TestCsvBackend(unittest.TestCase):
+    def _make_csv(self, content: str) -> str:
+        f = tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", newline="")
+        f.write(content)
+        f.close()
+        self._tmpfiles.append(f.name)
+        return f.name
+
+    def setUp(self):
+        self._tmpfiles = []
+
+    def tearDown(self):
+        for f in self._tmpfiles:
+            os.unlink(f)
+
+    def test_basic(self):
+        from backend_csv import CsvBackend
+        path = self._make_csv("name,age\nAlice,30\nBob,25\n")
+        b = CsvBackend(path)
+        self.assertTrue(b.info("/").is_dir)
+        entries = b.list("/")
+        self.assertEqual(entries[0], "_headers.txt")
+        self.assertIn("row_0000.json", entries)
+        self.assertIn("row_0001.json", entries)
+
+        self.assertEqual(b.get("/_headers.txt"), b"name\nage")
+
+        row0 = json.loads(b.get("/row_0000.json"))
+        self.assertEqual(row0["name"], "Alice")
+        self.assertEqual(row0["age"], "30")
+
+    def test_empty_csv(self):
+        from backend_csv import CsvBackend
+        path = self._make_csv("col1,col2\n")
+        b = CsvBackend(path)
+        self.assertEqual(b.list("/"), ["_headers.txt"])
+
+    def test_not_found(self):
+        from backend_csv import CsvBackend
+        path = self._make_csv("x\n1\n")
+        b = CsvBackend(path)
+        with self.assertRaises(NotFoundError):
+            b.get("/row_999.json")
+        with self.assertRaises(NotFoundError):
+            b.info("/nonexistent")
+
+    def test_info_sizes(self):
+        from backend_csv import CsvBackend
+        path = self._make_csv("a,b\n1,2\n")
+        b = CsvBackend(path)
+        info = b.info("/_headers.txt")
+        self.assertFalse(info.is_dir)
+        self.assertGreater(info.size, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
